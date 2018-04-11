@@ -29,7 +29,7 @@
 // global variables
 // -----------------------------------------------------------------------------------------------
 
-int i,j,k,kk,imax=32,jmax=32,kmax=64,time,tmax=50;
+int i,j,k,kk,imax=16,jmax=16,kmax=16,time,tmax=50;
 double qi=1.6E-19,qe=-1.6E-19, kr,ki,si,sf,alpha;
 double q=1.6E-19,pie=3.14159,Ta,w,eps0,Te,Ti,B,Kb,me,mi,nue,nui,denominator_e,denominator_i,nn,dt,h,s,wce,wci,mue,mui,dife,difi;
 double  ne[35][35][67],ni[35][35][67],difxne[35][35][67],difyne[35][35][67],difxni[35][35][67],difyni[35][35][67];
@@ -630,8 +630,8 @@ int main()
       density_initialization(15,15,15);
 
       //density_initialization(55,40,20);
-    printf("ne[%d, %d, %d] = %e\n", 15, 12, 12, ne[15, 12, 12]);
-    printf("ni[%d, %d, %d] = %e\n", 15, 12, 12, ni[15, 12, 12]);
+    printf("ne[%d, %d, %d] = %e\n", 5, 6, 7, ne[5, 6, 7]);
+    printf("ni[%d, %d, %d] = %e\n", 5, 6, 7, ni[5, 6, 7]);
 
       BC_densities();
 
@@ -667,7 +667,7 @@ printf("si before loop: %f\n", si);
 // -----------------------------------------------------------------------------------------------
 
       // Now Calculating electric field and density gradient which are calculated through function electric_field_elements
-    printf("V[%d, %d, %d] = %f\n", 10, 12, 24, V[1][12][24]);
+    printf("V[%d, %d, %d] = %f\n", 5, 6, 7, V[5][6][7]);
       electric_field_elements();
 
 

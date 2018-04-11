@@ -115,11 +115,54 @@ class poisson_vectorized:
         elif self.method == 'ndarray':
             self.B = np.eye(n1*n2*n3, n1*n2*n3)
 
-        self.A = self.kernels['poisson']
-        for kk in range(self.num_iterations-1):
-            print(kk)
-            self.B += self.A
-            self.A = self.kernels['poisson'].dot(self.A)
+        #A_file_name = 'self_A_%d_%d_%d_%d_coo.npz'%(n1, n2, n3, self.num_iterations)
+        #B_file_name = 'self_B_%d_%d_%d_%d_coo.npz'%(n1, n2, n3, self.num_iterations)
+        #A_loaded = False
+        #if os.path.isfile(A_file_name):
+        #    print("A file exitst.")
+        #    self.A = load_sparse_csr(A_file_name)
+        #    A_loaded = True
+        #B_loaded = False
+        #if os.path.isfile(B_file_name):
+        #    print("B file exitst.")
+        #    self.B = load_sparse_csr(B_file_name)
+        #    B_loaded = True
+        #if A_loaded and B_loaded:
+        #    print("A and B has been found!!")
+        #    if self.method == 'ndarray':
+        #        self.A = self.A.todense()
+        #        self.B = self.B.todense()
+        #else:
+        #    self.A = self.kernels['poisson']
+        #    for kk in range(self.num_iterations-1):
+        #        print(kk)
+        #        self.B += self.A
+        #        self.A = self.kernels['poisson'].dot(self.A)
+        #    print('converting large A and B to coo format to store')
+        #    self.B = coo_matrix(self.B, (n1*n2*n3, n1*n2*n3), dtype='float32')
+        #    self.A = coo_matrix(self.B, (n1*n2*n3, n1*n2*n3), dtype='float32')
+
+        #    print("saving self.B: ")
+        #    save_sparse_csr(B_file_name, self.B.tocsr())
+        #    print("saving self.A: ")
+        #    save_sparse_csr(A_file_name, self.A.tocsr())
+            self.A = self.B = None
+            A_file_name = 'self_A_%d_%d_%d_%d_ndarray.npy'%(n1, n2, n3, self.num_iterations)
+            B_file_name = 'self_B_%d_%d_%d_%d_ndarray.npy'%(n1, n2, n3, self.num_iterations)
+            if os.path.isfile(A_file_name):
+                print("%s exists"%(A_file_name))
+                self.A = np.load(A_file_name)
+            if os.path.isfile(B_file_name):
+                print("%s exists"%(B_file_name))
+                self.B = np.load(B_file_name)
+            self.A = self.kernels['poisson']
+            if (self.A is None or self.B is None):
+                for kk in range(self.num_iterations-1):
+                    print(kk)
+                    self.B += self.A
+                    self.A = self.kernels['poisson'].dot(self.A)
+
+            print("finished!!")
 
 
             
@@ -144,7 +187,7 @@ class poisson_vectorized:
             out = self.kernels['poisson'].dot(out) - g
         return out
 
-    def poisson_fast_gpu(self, V, g, A, sess):
+    def poisson_fast_one_loop_gpu(self, V, g, A, sess):
         out = V
         g = self.w * self.h2 * g / 6
         for kk in range(self.num_iterations):
@@ -173,8 +216,33 @@ class poisson_vectorized:
         return self.A.dot((V)) \
                 - self.B.dot(g) \
 
+    def poisson_fast_no_loop_gpu(self, V, g):
+        g = self.w * self.h2 * g / 6.
+        for I in range(0, self.n1*self.n2*self.n3):
+            k = I % self.n3
+            s1 = (I - k) // self.n3
+            j = s1 % self.n2
+            i = (s1 - j) // self.n2
+            #print(I, i, j, k)
+            if (i >= 1 and i < self.imax+1 and 
+                j >= 1 and j < self.jmax+1 and 
+                k >= 1 and k < self.kmax-1):
+                #print(I, i, j, k)
+                g[I] +=self.w*1./6* \
+                      ( g[I-1]
+                      + g[I-self.n3]
+                      + g[I-self.n3*self.n2])
+        Atf = tf.placeholder(tf.float32, shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
+        Btf = tf.placeholder(tf.float32, shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
+        Vtf = tf.placeholder(tf.float32, shape=[self.n1*self.n2*self.n3, 1])
+        gtf = tf.placeholder(tf.float32, shape=[self.n1*self.n2*self.n3, 1])
+        out = tf.matmul(Atf, Vtf) - tf.matmul(Btf, gtf)
+        with tf.Session() as sess:
+            out = sess.run(out, feed_dict = {Atf:self.A, Btf:self.B, Vtf:V, gtf:g})
+        return out
+
     #@jit
-    def poisson_brute_flat(self, V, g):
+    def poisson_brute2(self, V, g):
         for kk in range(self.num_iterations):
             temp = V * 1.
             for I in range(0, self.n1*self.n2*self.n3):
@@ -182,7 +250,7 @@ class poisson_vectorized:
                 s1 = (I - k) // self.n3
                 j = s1 % self.n2
                 i = (s1 - j) // self.n2
-                if (i*j*k==0 or k >= self.kmax - 1 or j >= self.jmax + 1 or i >= self.imax + 1):
+                if (i*j*k==0 or k >= self.kmax - 1 or j >= self.jmax - 1 or i >= self.imax - 1):
                     V[k + self.n3 * (j + self.n2 * i)] = 0 
                     continue
                 r =  temp[I-1] / 6.+   temp[I+1] / 6.+  temp[I+self.n3] / 6.+   temp[I-self.n3] / 6.+   temp[I+self.n2*self.n3] / 6. + temp[I-self.n2*self.n3] / 6.  - temp[I] - self.h2 * g[I] / 6.
@@ -191,7 +259,7 @@ class poisson_vectorized:
         return V
 
     #@jit
-    def poisson_brute_flat2(self, V, g):
+    def poisson_brute_main_flat(self, V, g):
         for kk in range(self.num_iterations):
             temp = V
             for I in range(0, self.n1*self.n2*self.n3):
@@ -210,7 +278,7 @@ class poisson_vectorized:
     #@jit
     def poisson_brute_main(self, V, g):
         for kk in range(self.num_iterations):
-            temp = V * 1.
+            temp = V
             for i in range(1, self.imax+1):
                 for j in range(1, self.jmax+1):
                     for k in range(1, self.kmax-1):
@@ -221,38 +289,60 @@ class poisson_vectorized:
 
     def poisson_brute_vectorized(self, temp, g):
         for kk in range(self.num_iterations):
-            r = self.w * (( \
-                  temp[2:self.imax+2, 1:self.jmax-1, 1:self.kmax-1] \
-                + temp[0:self.imax  , 1:self.jmax+1, 1:self.kmax-1] \
-                + temp[1:self.imax+1, 2:self.jmax+2, 1:self.kmax-1] \
-                + temp[1:self.imax+1, 0:self.jmax  , 1:self.kmax-1] \
-                + temp[1:self.imax+1, 1:self.jmax+1, 2:self.kmax  ] \
-                + temp[1:self.imax+1, 1:self.jmax+1, 0:self.kmax-2])) / 6. \
-                + (1-self.w) * temp[1:self.imax+1, 1:self.jmax+1, 1:self.kmax-1]  \
-                - self.w * self.h2 * g[1:self.imax+1, 1:self.jmax+1, 1:self.kmax-1] / 6.
-            temp[1:self.imax+1, 1:self.jmax+1, 1:self.kmax-1] = r
+            r = self.w * (( temp[2:self.imax,   1:self.jmax-1, 1:self.kmax-1] \
+                + temp[0:self.imax-2, 1:self.jmax-1, 1:self.kmax-1] \
+                + temp[1:self.imax-1, 2:self.jmax,   1:self.kmax-1] \
+                + temp[1:self.imax-1, 0:self.jmax-2, 1:self.kmax-1] \
+                + temp[1:self.imax-1, 1:self.jmax-1, 2:self.kmax  ] \
+                + temp[1:self.imax-1, 1:self.jmax-1, 0:self.kmax-2])) / 6. \
+                + (1-self.w) * temp[1:self.imax-1, 1:self.jmax-1, 1:self.kmax-1]  \
+                - self.w * self.h2 * g[1:self.imax-1, 1:self.jmax-1, 1:self.kmax-1] / 6.
+            temp[1:self.imax-1, 1:self.jmax-1, 1:self.kmax-1] = r
         return temp
 
+    def poisson_brute3_gpu(self, V, g, sess):
+        out = tf.Variable(tf.float32, V)
+        #for kk in range(self.num_iterations):
+        #    out[1:self.imax-1, 1:self.jmax-1, 1:self.kmax-1].assign(out[1:self.imax-1, 1:self.jmax-1, 1:self.kmax-1] + 1)
+        sess.run(out)
+        return sess, out
+
+    def apply_kernel(self, V, key):
+        return self.kernels[key].dot(V)
+    
+    def electric_field_elements(self, V):
+        out = np.zeros_like(V)
+        out[1:self.imax+1, :, :] = (V[1:self.imax+1, :, :] - V[2:self.imax+2, :, :]) / self.h
+        return out
+
+    def average_x(self, V, out):
+        for j in range(1, self.jmax):
+            out[1, j, :] = V[1, j, :] + V[1, j+1, :] + V[self.imax, j, :] + \
+                    V[self.imax, j+1, :]
+
+    def average_x_fast(self, V, out):
+        out[1, 1:self.jmax, :] = V[1, 1:self.jmax] + V[1, 2:self.jmax+1, :] \
+                + V[self.imax, 1:self.jmax, :] + V[self.imax, 2:self.jmax+1, :]
 
 
 def rel_error(x, y):
   """ re-turns relative error """
   return np.max(np.abs(x - y) / (np.maximum(1e-8, np.abs(x) + np.abs(y))))
 
-def stat_diff(V1, V2, n1, n2, n3):
-    print("relative error",  rel_error(V1, V2))
+def stat_diff(V1, V2, n1, n2, n3, text=""):
+    print("%-30s relative error"%text,  rel_error(V1, V2))
     #print(np.where(np.abs(V1 - V2) > 20))
 
 def main():
-    imax = 8
-    jmax = 8
+    imax = 20
+    jmax = 16
     kmax = 8
-    upper_lim = 3
+    upper_lim = 1
     n1 = imax + upper_lim
     n2 = jmax + upper_lim
     n3 = kmax + upper_lim
     w = 1.843
-    pv = poisson_vectorized(n1, n2, n3, w=w, num_iterations=40, method='ndarray'\
+    pv = poisson_vectorized(n1, n2, n3, w=w, num_iterations=40, method='coo'\
                                     , upper_lim=upper_lim)
     V1 = (np.random.rand(n1 * n2 * n3) * 30  + 1).astype('float32')
     g = (np.random.rand(n1 * n2 * n3) * 2e5  + -1e5).astype('float32')
@@ -270,23 +360,17 @@ def main():
     g_reshaped = g.reshape(n1, n2, n3)
 
                    
-    print("Starting poisson no loop")
+    print("Starting poisson fast")
     start = time.time()
-    no_loop = pv.poisson_fast_no_loop(V1 * 1., g*1.)
+    a = pv.poisson_fast(V1 * 1., g)
     print("Time taken: %f"%(time.time() - start))
 
-    print("Starting poisson one loop")
+    print("Starting poisson brute 2")
     start = time.time()
-    one_loop = pv.poisson_fast_one_loop(V1 * 1., g*1.)
+    b = pv.poisson_brute(V1.reshape(n1, n2, n3) , g.reshape(n1, n2, n3))
     print("Time taken: %f"%(time.time() - start))
 
-    print("Starting poisson brute main")
-    start = time.time()
-    brute_main = pv.poisson_brute_main(V1.reshape(n1, n2, n3) , g.reshape(n1, n2, n3))
-    print("Time taken: %f"%(time.time() - start))
-
-    stat_diff(no_loop, brute_main.reshape(n1*n2*n3), n1, n2, n3)
-    stat_diff(no_loop, one_loop, n1, n2, n3)
+    stat_diff(a, b.reshape(n1*n2*n3), n1, n2, n3)
 
 if __name__ == "__main__":
     main()
