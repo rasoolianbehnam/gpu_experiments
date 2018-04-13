@@ -37,7 +37,7 @@ def load_sparse_csr(filename):
     return csr_matrix((loader['data'], loader['indices'], loader['indptr']), shape=loader['shape'])
 
 class poisson_vectorized:
-    def __init__(self, n1, n2, n3, w, num_iterations=40, h=1e3, method='ndarray',\
+    def __init__(self, n1, n2, n3, w, num_iterations=40, h=1e-3, method='ndarray',\
             upper_lim=3):
         self.n1 = n1
         self.n2 = n2
@@ -49,7 +49,7 @@ class poisson_vectorized:
         self.method = method
         self.kernels = {}
         #keys = ['poisson', 'x_gradient', 'y_gradient', 'average_x']
-        keys = ['poisson']
+        keys = ['poisson', 'g']
         if self.method == 'lil' or method == 'coo1':
             for key in keys:
                 self.kernels[key] = lil_matrix((n1*n2*n3, n1*n2*n3), dtype='float32')
@@ -98,6 +98,8 @@ class poisson_vectorized:
 #                self.kernels['average_x'][I, I+n3] = 1
 #                self.kernels['average_x'][I, I-n2*n3] = 1
 #                self.kernels['average_x'][I, I+n3-n2*n3] = 1
+            else:
+                self.kernels['poisson'][I, I] = 1
             
 
         print("Finished creating kernels.")
@@ -108,7 +110,6 @@ class poisson_vectorized:
         # uncomment in order to make fast1 work
         # fast1 is less efficient that fast due to chain matrix multiplicaiton order
         # rule.
-        print("calculating matrix powers")
 
         if self.method == 'coo':
             self.B = lil_matrix(eye(n1*n2*n3, n1*n2*n3), dtype='float32')
@@ -146,21 +147,27 @@ class poisson_vectorized:
         #    save_sparse_csr(B_file_name, self.B.tocsr())
         #    print("saving self.A: ")
         #    save_sparse_csr(A_file_name, self.A.tocsr())
-            self.A = self.B = None
+            print("calculating matrix powers")
+            Afound = Bfound = False
             A_file_name = 'self_A_%d_%d_%d_%d_ndarray.npy'%(n1, n2, n3, self.num_iterations)
             B_file_name = 'self_B_%d_%d_%d_%d_ndarray.npy'%(n1, n2, n3, self.num_iterations)
             if os.path.isfile(A_file_name):
                 print("%s exists"%(A_file_name))
                 self.A = np.load(A_file_name)
+                Afound = True
             if os.path.isfile(B_file_name):
                 print("%s exists"%(B_file_name))
                 self.B = np.load(B_file_name)
-            self.A = self.kernels['poisson']
-            if (self.A is None or self.B is None):
+                Bfound = True
+            if (not Afound and not Bfound):
+                self.A = self.kernels['poisson']
                 for kk in range(self.num_iterations-1):
-                    print(kk)
+                    if (kk % 10 == 0):
+                        print(kk)
                     self.B += self.A
                     self.A = self.kernels['poisson'].dot(self.A)
+                np.save(A_file_name, self.A)
+                np.save(B_file_name, self.B)
 
             print("finished!!")
 
@@ -183,6 +190,8 @@ class poisson_vectorized:
                       ( g[I-1]
                       + g[I-self.n3]
                       + g[I-self.n3*self.n2])
+            else:
+                g[I] = 0
         for kk in range(self.num_iterations):
             out = self.kernels['poisson'].dot(out) - g
         return out
@@ -213,6 +222,8 @@ class poisson_vectorized:
                       ( g[I-1]
                       + g[I-self.n3]
                       + g[I-self.n3*self.n2])
+            else:
+                g[I] = 0
         return self.A.dot((V)) \
                 - self.B.dot(g) \
 
@@ -268,7 +279,6 @@ class poisson_vectorized:
                 j = s1 % self.n2
                 i = (s1 - j) // self.n2
                 if (i*j*k==0 or k >= self.kmax - 1 or j >= self.jmax + 1 or i >= self.imax + 1):
-                    V[k + self.n3 * (j + self.n2 * i)] = 0 
                     continue
                 r =  temp[I-1] / 6.+   temp[I+1] / 6.+  temp[I+self.n3] / 6.+   temp[I-self.n3] / 6.+   temp[I+self.n2*self.n3] / 6. + temp[I-self.n2*self.n3] / 6.  - temp[I] - self.h2 * g[I] / 6.
                 r = self.w * r
@@ -329,7 +339,12 @@ def rel_error(x, y):
   """ re-turns relative error """
   return np.max(np.abs(x - y) / (np.maximum(1e-8, np.abs(x) + np.abs(y))))
 
-def stat_diff(V1, V2, n1, n2, n3, text=""):
+def max_rel_error_loc(x, y):
+  """ re-turns relative error """
+  a = np.abs(x - y) / (np.maximum(1e-8, np.abs(x) + np.abs(y)))
+  return a
+
+def stat_diff(V1, V2, text=""):
     print("%-30s relative error"%text,  rel_error(V1, V2))
     #print(np.where(np.abs(V1 - V2) > 20))
 

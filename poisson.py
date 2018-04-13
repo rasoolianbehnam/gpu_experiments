@@ -7,7 +7,11 @@ def printf(text, *args):
 imax=16
 jmax=16
 kmax=16
-tmax=50
+tmax=4
+upper_lim = 3
+n1 = imax+upper_lim
+n2 = jmax+upper_lim
+n3 = kmax+upper_lim
 qi=1.6E-19
 qe=-1.6E-19
 q=1.6E-19
@@ -25,29 +29,6 @@ eps0  = 8.854E-12;
 si    = 0.0;
 sf    =0.0;
 
-g   = np.zeros((imax+3, jmax+3, kmax+3))
-R   = np.zeros((imax+3, jmax+3, kmax+3))
-ne  = np.zeros((imax+3, jmax+3, kmax+3))
-ni  = np.zeros((imax+3, jmax+3, kmax+3))
-V   = np.zeros((imax+3, jmax+3, kmax+3))
-Ex  = np.zeros((imax+3, jmax+3, kmax+3))
-Ey  = np.zeros((imax+3, jmax+3, kmax+3))
-Ez  = np.zeros((imax+3, jmax+3, kmax+3))
-fex = np.zeros((imax+3, jmax+3, kmax+3))
-fey = np.zeros((imax+3, jmax+3, kmax+3))
-fez = np.zeros((imax+3, jmax+3, kmax+3))
-fix = np.zeros((imax+3, jmax+3, kmax+3))
-fiy = np.zeros((imax+3, jmax+3, kmax+3))
-fiz = np.zeros((imax+3, jmax+3, kmax+3))
-difxne = np.zeros((imax+3, jmax+3, kmax+3))
-difxni = np.zeros((imax+3, jmax+3, kmax+3))
-difyne = np.zeros((imax+3, jmax+3, kmax+3))
-difyni = np.zeros((imax+3, jmax+3, kmax+3))
-difzne = np.zeros((imax+3, jmax+3, kmax+3))
-difzni = np.zeros((imax+3, jmax+3, kmax+3))
-Exy = np.zeros((imax+3, jmax+3, kmax+3))
-difxyne = np.zeros((imax+3, jmax+3, kmax+3))
-difxyni = np.zeros((imax+3, jmax+3, kmax+3))
 
 nn=1.33/(Kb*Ti); #neutral density=p/(Kb.T)
 nue=nn*1.0E-20*np.sqrt(Kb*Te/me); # electron collision frequency= neutral density * sigma_e*Vth_e
@@ -71,13 +52,8 @@ Ta=np.arccos((np.cos(pie/imax)+np.cos(pie/jmax)+\
 w=2.0/(1.0+np.sin(Ta));
 print("%f \n"%w);
 
-method = 'ndarray'
-upper_lim = 3
-pv = poisson_vectorized(imax+upper_lim, jmax+upper_lim, kmax+upper_lim,\
-        w=w, h=h, num_iterations=40, method=method\
-        , upper_lim=upper_lim)
 
-def density_initialization(x_position, y_position, z_position):
+def density_initialization(ne, ni, x_position, y_position, z_position):
     for i in range(1, imax+1):
         for j in range(1, jmax+1):
             for k in range(1, kmax-1):
@@ -89,7 +65,7 @@ def density_initialization(x_position, y_position, z_position):
                         +((j-y_position)**2)+\
                         ((k-z_position)**2))/100.0)
 
-def BC_densities():
+def BC_densities(ne, ni):
      # BC on densities
     ne[imax+1, 0:jmax+1, 0:kmax] = ne[1, 0:jmax+1, 0:kmax]
     ni[imax+1, 0:jmax+1, 0:kmax] = ni[1, 0:jmax+1, 0:kmax]
@@ -114,28 +90,27 @@ def poisson_brute(V, g, num_iterations, imax, jmax, kmax, h=h, w=w):
                     V[i, j, k] += r
     return V
 
-def plasma_sim_solve_poisson_equation_on_grid():
-    global V
+def plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv):
+    w = pv.w
+    h = pv.h
+    num_iterations = pv.num_iterations
    # Here we calculate the right hand side of the Poisson equation
     g[1:imax+1, 1:jmax+1, 1:kmax-1]=-(ne[1:imax+1, 1:jmax+1, 1:kmax-1]*qe\
             +ni[1:imax+1, 1:jmax+1, 1:kmax-1]*qi)/eps0;
     print("Starting poisson")
     start = Time.time()
     ################################333
-    a, b, c = V.shape
-    V = pv.poisson_fast_no_loop(V.reshape(-1, 1),  g.reshape(-1, 1)).reshape(a, b, c)
+    V1 = pv.poisson_fast_no_loop(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
     ################################333
-    #poisson_brute(V, g, 40, imax, jmax, kmax, h, w)
-    #V = pv.poisson_brute_main(V, g)
+    V2 = poisson_brute(V*1., g*1., 40, pv.imax, pv.jmax, pv.kmax, pv.h, pv.w)
+    V3 = pv.poisson_brute_main(V*1., g*1.)
+    #V[:, :, :] = pv.poisson_brute_main_flat(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
+    stat_diff(V1, V2, "fast no loop vs brute here")
+    stat_diff(V2, V3, "brute pv loop vs brute here")
     time_taken2 = Time.time() - start
     print("Time taken: %f"%(time_taken2))
+    V[:, :, :] = V1
 
-   #for kk in range(0, 40):
-   #    for k in range(1, kmax-1):
-   #        for i in range(1, imax+1):
-   #            for j in range(1, jmax+1):
-   #                R[i, j, k]= (V[i+1, j, k]+V[i-1, j, k]+V[i, j+1, k]+V[i, j-1, k]+V[i, j, k+1]+V[i, j, k-1])/6.0-V[i, j, k]-(h*h)*g[i, j, k]/6.0;
-   #                V[i, j, k]=V[i, j, k]+w*R[i, j, k];
 
     V[imax+1, 0:jmax+1, 0:kmax]=V[1, 0:jmax+1, 0:kmax];
     V[0:jmax+1, jmax+1, 0:kmax]=V[0:jmax+1, 1, 0:kmax];
@@ -143,7 +118,8 @@ def plasma_sim_solve_poisson_equation_on_grid():
     V[0:jmax+1, 0, 0:kmax]=V[0:jmax+1, jmax, 0:kmax];
 
 
-def electric_field_elements():
+
+def electric_field_elements(V, ne, ni, Ez, Ex, Ey, difxne, difxni, difyne, difyni, difzne, difzni):
     Ez[1:imax+1, 1:jmax+1, 0:kmax-1] = \
             (V[1:imax+1, 1:jmax+1, 0:kmax-1]
             - V[1:imax+1, 1:jmax+1, 1:kmax])/h
@@ -169,9 +145,9 @@ def electric_field_elements():
     difyni[1:imax+1, 1:jmax+1, 1:kmax-1] = \
             (ni[1:imax+1, 2:jmax+1+1, 1:kmax-1] - ne[1:imax+1, 1:jmax+1, 1:kmax-1]) / h
 
-def average_x():
+def average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni):
     Exy[2:imax+1, 1:jmax, 1:kmax-1] = .25*(Ex[2:imax+1, 1:jmax, 1:kmax-1] +\
-            Ex[2:imax+1, 2:jmax+1, 1:kmax-1] + + Ex[1:imax, 1:jmax, 1:kmax-1] + \
+            Ex[2:imax+1, 2:jmax+1, 1:kmax-1] + Ex[1:imax, 1:jmax, 1:kmax-1] + \
             Ex[1:imax, 2:jmax+1, 1:kmax-1])
     difxyne[2:imax+1, 1:jmax, 1:kmax-1] = .25*(difxne[2:imax+1, 1:jmax, 1:kmax-1] +\
             difxne[2:imax+1, 2:jmax+1, 1:kmax-1] + difxne[1:imax, 1:jmax, 1:kmax-1]) +\
@@ -207,7 +183,7 @@ def average_x():
 
 
 
-def flux_x():
+def flux_x(ne, ni, fex, fix, Ex, Exy, difxne, difxni, difxyne, difxyni):
     fex[1:imax+1, 1:jmax+1, 1:kmax-1]=\
             (-0.5*(ne[1:imax+1, 1:jmax+1, 1:kmax-1]\
             +ne[2:imax+1+1, 1:jmax+1, 1:kmax-1])*mue\
@@ -224,7 +200,7 @@ def flux_x():
     fix[0, 1:jmax+1, 1:kmax-1] = fix[imax, 1:jmax+1, 1:kmax-1];
 
 
-def average_y():
+def average_y(ne, ni, Ey, Exy, difyne, difyni, difxyne, difxyni):
     Exy[1:imax, 2:jmax+1, 1:kmax-1]= 0.25*(Ey[1:imax, 2:jmax+1, 1:kmax-1]+Ey[1:imax, 1:jmax+1-1, 1:kmax-1]+Ey[2:imax+1, 2:jmax+1, 1:kmax-1]+Ey[2:imax+1, 1:jmax+1-1, 1:kmax-1]); 
     difxyne[1:imax, 2:jmax+1, 1:kmax-1]= 0.25*(difyne[1:imax, 2:jmax+1, 1:kmax-1]+difyne[1:imax, 1:jmax+1-1, 1:kmax-1]+difyne[2:imax+1, 2:jmax+1, 1:kmax-1]+difyne[2:imax+1, 1:jmax+1-1, 1:kmax-1]);
     difxyni[1:imax, 2:jmax+1, 1:kmax-1]= 0.25*(difyni[1:imax, 2:jmax+1, 1:kmax-1]+difyni[1:imax, 1:jmax+1-1, 1:kmax-1]+difyni[2:imax+1, 2:jmax+1, 1:kmax-1]+difyni[2:imax+1, 1:jmax+1-1, 1:kmax-1]);
@@ -246,7 +222,7 @@ def average_y():
     difxyne[imax, jmax, 1:kmax-1]=(difyne[imax, jmax-1, 1:kmax-1]+difyne[imax, jmax, 1:kmax-1]+difyne[1, jmax-1, 1:kmax-1])/3.0;
     difxyni[imax, jmax, 1:kmax-1]=(difyni[imax, jmax-1, 1:kmax-1]+difyni[imax, jmax, 1:kmax-1]+difyni[1, jmax-1, 1:kmax-1])/3.0; 
 
-def flux_y():
+def flux_y(ne, ni, fey, fiy, Ey, Ez, Exy, difyne, difyni, difxyne, difxyni):
     fey[1:imax+1, 1:jmax+1, 1:kmax-1]= (-0.5*(ne[1:imax+1, 2:jmax+1+1, 1:kmax-1]+ne[1:imax+1, 1:jmax+1, 1:kmax-1])*mue*Ey[1:imax+1, 1:jmax+1, 1:kmax-1]-dife*difyne[1:imax+1, 1:jmax+1, 1:kmax-1]
     -wce*q*0.5*(ne[1:imax+1, 2:jmax+1+1, 1:kmax-1]+ne[1:imax+1, 1:jmax+1, 1:kmax-1])*Exy[1:imax+1, 1:jmax+1, 1:kmax-1]/(me*nue*nue)-wce*dife*difxyne[1:imax+1, 1:jmax+1, 1:kmax-1]/nue)/denominator_e;
 
@@ -257,7 +233,7 @@ def flux_y():
     fey[1:imax+1, 0, 1:kmax-1] = fey[1:imax+1, jmax, 1:kmax-1];
     fiy[1:imax+1, 0, 1:kmax-1] = fiy[1:imax+1, jmax, 1:kmax-1];
 
-def flux_z():
+def flux_z(ne, ni, Ez, fez, fiz, difzne, difzni):
     fez[1:imax+1, 1:jmax+1, 1:kmax-1]=-0.5*(ne[1:imax+1, 1:jmax+1, 1:kmax-1]+ne[1:imax+1, 1:jmax+1, 2:kmax-1+1])*mue*Ez[1:imax+1, 1:jmax+1, 1:kmax-1]-dife*difzne[1:imax+1, 1:jmax+1, 1:kmax-1];
 
     fiz[1:imax+1, 1:jmax+1, 1:kmax-1]=0.5*(ni[1:imax+1, 1:jmax+1, 1:kmax-1]+ni[1:imax+1, 1:jmax+1, 2:kmax-1+1])*mui*Ez[1:imax+1, 1:jmax+1, 1:kmax-1]-difi*difzni[1:imax+1, 1:jmax+1, 1:kmax-1];
@@ -269,23 +245,53 @@ def flux_z():
  
 
 def main():
-    density_initialization(15,15,15);
+    g       = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    R       = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    ne      = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    ni      = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    V       = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    Ex      = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    Ey      = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    Ez      = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    fex     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    fey     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    fez     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    fix     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    fiy     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    fiz     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    difxne  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    difxni  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    difyne  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    difyni  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    difzne  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    difzni  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    Exy     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    difxyne = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    difxyni = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+   
+    method = 'ndarray'
+    pv = poisson_vectorized(imax+upper_lim, jmax+upper_lim, kmax+upper_lim,\
+            w=w, h=h, num_iterations=40, method=method\
+            , upper_lim=upper_lim)
+
+
+    density_initialization(ne, ni, 15,15,15);
 
     si = np.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
     printf("si before loop: %f", si);
     printf("ne[%d, %d, %d] = %e\n", 5, 6, 7, ne[5, 6, 7]);
     printf("ni[%d, %d, %d] = %e\n", 5, 6, 7, ni[5, 6, 7]);
-    BC_densities()
+    BC_densities(ne, ni)
     
     for time in range(1, tmax):
-        plasma_sim_solve_poisson_equation_on_grid()
+        plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv)
         printf("V[%d, %d, %d] = %f\n", 5, 6, 7, V[5, 6, 7]);
-        electric_field_elements()
-        average_x()
-        flux_y()
-        average_y()
-        flux_x()
-        flux_z()
+        electric_field_elements(V, ne, ni, Ez, Ex, Ey, difxne, difxni, difyne, difyni, difzne, difzni)
+        average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni)
+        flux_y(ne, ni, fey, fiy, Ey, Ez, Exy, difyne, difyni, difxyne, difxyni)
+        average_y(ne, ni, Ey, Exy, difyne, difyni, difxyne, difxyni)
+        flux_x(ne, ni, fex, fix, Ex, Exy, difxne, difxni, difxyne, difxyni)
+        flux_z(ne, ni, Ez, fez, fiz, difzne, difzni)
 
         ne[1:imax+1, 1:jmax+1, 1:kmax] = \
             ne[1:imax+1, 1:jmax+1, 1:kmax] -\
@@ -310,7 +316,7 @@ def main():
         ne[1:imax+1, 1:jmax+1, 0] = -dt * fez[1:imax+1, 1:jmax+1, 0] / h
         ni[1:imax+1, 1:jmax+1, 0] = -dt * fiz[1:imax+1, 1:jmax+1, 0] / h
 
-        BC_densities()
+        BC_densities(ne, ni)
 
         sf = np.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
         
@@ -320,7 +326,7 @@ def main():
                 alpha * ne[1:imax+1, 1:jmax+1, 1:kmax-1]
 
         printf("%d \n", time);
-
+    return V, g, pv
 
 if __name__=="__main__":
     main()
