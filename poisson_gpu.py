@@ -1,292 +1,387 @@
-
-# coding: utf-8
-
-# In[1]:
-
-
 import numpy as np
-import tensorflow as tf
-from scipy.sparse import csr_matrix, lil_matrix, coo_matrix, eye
-import time
-import os.path
-def mat_pow(a, k, b):
-    if k == 0:
-        m = np.eye(a.shape[0])
-        b = m * 1.
-    elif k % 2:
-        m, b = mat_pow(a, k-1, b)
-        m = a.dot(m)
-        b += a
-    else:
-        m, b = mat_pow(a, k // 2, b)
-        m = m.dot(m)
-        b += a
-    print(k)
-    return m, b
+from working_gpu import *
+import time as Time
 
-def convert_sparse_matrix_to_sparse_tensor(coo):
-        indices = np.mat([coo.row, coo.col]).transpose()
-        return tf.SparseTensor(indices, coo.data, coo.shape)
-
-def save_sparse_csr(filename, array):
-        np.savez(filename, data=array.data, \
-                indices=array.indices, indptr=array.indptr, shape=array.shape)
-
-def load_sparse_csr(filename):
-    loader = np.load(filename)
-    return csr_matrix((loader['data'], loader['indices'], loader['indptr']), shape=loader['shape'])
-
-class poisson_vectorized:
-    def __init__(self, n1, n2, n3, w, num_iterations=40, h=1e3, method='ndarray',\
-            upper_lim=3):
-        self.n1 = n1
-        self.n2 = n2
-        self.n3 = n3
-        self.imax = n1 - upper_lim
-        self.jmax = n2 - upper_lim
-        self.kmax = n3 - upper_lim
-
-        self.method = method
-        self.kernels = {}
-        #keys = ['poisson', 'x_gradient', 'y_gradient', 'average_x']
-        keys = ['poisson']
-        if self.method == 'lil' or method == 'coo1':
-            for key in keys:
-                self.kernels[key] = lil_matrix((n1*n2*n3, n1*n2*n3), dtype='float32')
-        elif method == 'coo':
-            for key in keys:
-                self.kernels[key] = np.zeros((n1*n2*n3, n1*n2*n3), dtype='float32')
-        elif self.method == 'ndarray':
-            for key in keys:
-                self.kernels[key] = np.zeros((n1*n2*n3, n1*n2*n3), dtype='float32')
-        print("method used is %s"%(self.method))
-        self.w = w
-        self.h = h
-        self.h2 = h**2
-        self.num_iterations = num_iterations
-        print("Starting to create kernels...")
-        for I in range(0, n1*n2*n3):
-            k = I % n3
-            s1 = (I - k) // n3
-            j = s1 % n2
-            i = (s1 - j) // n2
-            #print(I, i, j, k)
-            if (i >= 1 and i < self.imax+1 and 
-                j >= 1 and j < self.jmax+1 and 
-                k >= 1 and k < self.kmax-1):
-                #print(I, i, j, k)
-                if (I % 1000 == 0):
-                    print("%d / %d"%(I, n1*n2*n3))
-                self.kernels['poisson'][I, :] =self.w*1./6* \
-                      ( self.kernels['poisson'][I-1, :] \
-                      + self.kernels['poisson'][I-n3, :] \
-                      + self.kernels['poisson'][I-n3*n2, :])
-                self.kernels['poisson'][I, I+1] += self.w*1./6
-                self.kernels['poisson'][I, I+n3] += self.w*1./6
-                self.kernels['poisson'][I, I+n2*n3] += self.w*1./6
-                self.kernels['poisson'][I, I] += 1 - self.w
-
-#                self.kernels['x_gradient'][I, I] = -1
-#                self.kernels['x_gradient'][I, I+n2*n3] = 1
-#
-#                self.kernels['y_gradient'][I, I] = -1
-#                self.kernels['y_gradient'][I, I + n3] = 1
-#            elif (i >= 2 and i < self.imax+1 and 
-#                  j >= 1 and j < self.jmax and 
-#                  k >= 1 and k < self.kmax-1):
-#                self.kernels['average_x'][I, I] = 1
-#                self.kernels['average_x'][I, I+n3] = 1
-#                self.kernels['average_x'][I, I-n2*n3] = 1
-#                self.kernels['average_x'][I, I+n3-n2*n3] = 1
-            
-
-        print("Finished creating kernels.")
-        if self.method == 'coo':
-            print("Starting coo conversion")
-            for key in self.kernels:
-                self.kernels[key] = coo_matrix(self.kernels[key], (n1*n2*n3, n1*n2*n3), dtype='float32')
-        # uncomment in order to make fast1 work
-        # fast1 is less efficient that fast due to chain matrix multiplicaiton order
-        # rule.
-        print("calculating matrix powers")
-
-        if self.method == 'coo':
-            self.B = lil_matrix(eye(n1*n2*n3, n1*n2*n3), dtype='float32')
-        elif self.method == 'ndarray':
-            self.B = np.eye(n1*n2*n3, n1*n2*n3)
-
-        self.A = self.kernels['poisson']
-        for kk in range(self.num_iterations-1):
-            print(kk)
-            self.B += self.A
-            self.A = self.kernels['poisson'].dot(self.A)
+def printf(text, *args):
+    print(text%args)
+imax=16
+jmax=16
+kmax=16
+tmax=50
+upper_lim = 3
+n1 = imax+upper_lim
+n2 = jmax+upper_lim
+n3 = kmax+upper_lim
+qi=1.6E-19
+qe=-1.6E-19
+q=1.6E-19
+pie=3.14159
+Kb    = 1.38E-23;
+B     = 1.0;
+Te    = 2.5*11604.5;
+Ti    = 0.025*11604.5;
+me    = 9.109E-31;
+mi    = 6.633E-26;
+ki    = 0.0;
+dt    = 1.0E-12;
+h     = 1.0E-3;
+eps0  = 8.854E-12;
+si    = 0.0;
+sf    =0.0;
 
 
-            
-    def poisson_fast_one_loop(self, V, g):
-        out = V
-        g = self.w * self.h2 * g / 6
-        for I in range(0, self.n1*self.n2*self.n3):
-            k = I % self.n3
-            s1 = (I - k) // self.n3
-            j = s1 % self.n2
-            i = (s1 - j) // self.n2
-            #print(I, i, j, k)
-            if (i >= 1 and i < self.imax+1 and 
-                j >= 1 and j < self.jmax+1 and 
-                k >= 1 and k < self.kmax-1):
-                #print(I, i, j, k)
-                g[I] +=self.w*1./6* \
-                      ( g[I-1]
-                      + g[I-self.n3]
-                      + g[I-self.n3*self.n2])
-        for kk in range(self.num_iterations):
-            out = self.kernels['poisson'].dot(out) - g
-        return out
+nn=1.33/(Kb*Ti); #neutral density=p/(Kb.T)
+nue=nn*1.0E-20*np.sqrt(Kb*Te/me); # electron collision frequency= neutral density * sigma_e*Vth_e
+nui=nn*5.0E-19*np.sqrt(Kb*Ti/mi);
 
-    def poisson_fast_gpu(self, V, g, A, sess):
-        out = V
-        g = self.w * self.h2 * g / 6
-        for kk in range(self.num_iterations):
-            out = tf.sparse_tensor_dense_matmul(A, out) - g
-            #out = tf.matmul(A, out) - g
-        sess.run(out)
-        return sess, out
+wce=q*B/me;
+wci=q*B/mi;
+mue=q/(me*nue);
+mui=q/(mi*nui);
+dife=Kb*Te/(me*nue);
+difi=Kb*Ti/(mi*nui);
+ki=0.00002/(nn*dt);
 
-    #can be numerically unstable
-    def poisson_fast_no_loop(self, V, g):
-        g = self.w * self.h2 * g / 6.
-        for I in range(0, self.n1*self.n2*self.n3):
-            k = I % self.n3
-            s1 = (I - k) // self.n3
-            j = s1 % self.n2
-            i = (s1 - j) // self.n2
-            #print(I, i, j, k)
-            if (i >= 1 and i < self.imax+1 and 
-                j >= 1 and j < self.jmax+1 and 
-                k >= 1 and k < self.kmax-1):
-                #print(I, i, j, k)
-                g[I] +=self.w*1./6* \
-                      ( g[I-1]
-                      + g[I-self.n3]
-                      + g[I-self.n3*self.n2])
-        return self.A.dot((V)) \
-                - self.B.dot(g) \
+denominator_e= (1+wce*wce/(nue*nue));
+denominator_i= (1+wci*wci/(nui*nui));
+print("%f %f \n"%(wce,wci));
 
-    #@jit
-    def poisson_brute_flat(self, V, g):
-        for kk in range(self.num_iterations):
-            temp = V * 1.
-            for I in range(0, self.n1*self.n2*self.n3):
-                k = I % self.n3
-                s1 = (I - k) // self.n3
-                j = s1 % self.n2
-                i = (s1 - j) // self.n2
-                if (i*j*k==0 or k >= self.kmax - 1 or j >= self.jmax + 1 or i >= self.imax + 1):
-                    V[k + self.n3 * (j + self.n2 * i)] = 0 
-                    continue
-                r =  temp[I-1] / 6.+   temp[I+1] / 6.+  temp[I+self.n3] / 6.+   temp[I-self.n3] / 6.+   temp[I+self.n2*self.n3] / 6. + temp[I-self.n2*self.n3] / 6.  - temp[I] - self.h2 * g[I] / 6.
-                r = self.w * r
-                V[I] += r
-        return V
+Ta=np.arccos((np.cos(pie/imax)+np.cos(pie/jmax)+\
+        np.cos(pie/kmax))/3.0);# needs to be double checked
 
-    #@jit
-    def poisson_brute_flat2(self, V, g):
-        for kk in range(self.num_iterations):
-            temp = V
-            for I in range(0, self.n1*self.n2*self.n3):
-                k = I % self.n3
-                s1 = (I - k) // self.n3
-                j = s1 % self.n2
-                i = (s1 - j) // self.n2
-                if (i*j*k==0 or k >= self.kmax - 1 or j >= self.jmax + 1 or i >= self.imax + 1):
-                    V[k + self.n3 * (j + self.n2 * i)] = 0 
-                    continue
-                r =  temp[I-1] / 6.+   temp[I+1] / 6.+  temp[I+self.n3] / 6.+   temp[I-self.n3] / 6.+   temp[I+self.n2*self.n3] / 6. + temp[I-self.n2*self.n3] / 6.  - temp[I] - self.h2 * g[I] / 6.
-                r = self.w * r
-                V[I] += r
-        return V
-    
-    #@jit
-    def poisson_brute_main(self, V, g):
-        for kk in range(self.num_iterations):
-            temp = V * 1.
-            for i in range(1, self.imax+1):
-                for j in range(1, self.jmax+1):
-                    for k in range(1, self.kmax-1):
-                        r = temp[i+1, j, k] / 6. + temp[i-1, j, k] / 6. + temp[i, j+1, k] / 6. + temp[i, j-1, k] / 6. + temp[i ,j, k+1] / 6. + temp[i, j, k-1] / 6. - temp[i, j, k] - self.h2 * g[i, j, k] / 6.
-                        r = self.w * r
-                        V[i, j, k] += r
-        return V
+w=2.0/(1.0+np.sin(Ta));
+print("%f \n"%w);
 
-    def poisson_brute_vectorized(self, temp, g):
-        for kk in range(self.num_iterations):
-            r = self.w * (( \
-                  temp[2:self.imax+2, 1:self.jmax-1, 1:self.kmax-1] \
-                + temp[0:self.imax  , 1:self.jmax+1, 1:self.kmax-1] \
-                + temp[1:self.imax+1, 2:self.jmax+2, 1:self.kmax-1] \
-                + temp[1:self.imax+1, 0:self.jmax  , 1:self.kmax-1] \
-                + temp[1:self.imax+1, 1:self.jmax+1, 2:self.kmax  ] \
-                + temp[1:self.imax+1, 1:self.jmax+1, 0:self.kmax-2])) / 6. \
-                + (1-self.w) * temp[1:self.imax+1, 1:self.jmax+1, 1:self.kmax-1]  \
-                - self.w * self.h2 * g[1:self.imax+1, 1:self.jmax+1, 1:self.kmax-1] / 6.
-            temp[1:self.imax+1, 1:self.jmax+1, 1:self.kmax-1] = r
-        return temp
+
+def density_initialization(ne, ni, x_position, y_position, z_position):
+    for i in range(1, imax+1):
+        for j in range(1, jmax+1):
+            for k in range(1, kmax-1):
+                ne[i, j, k]=\
+                        1.0E14+1.0E14*np.exp(-((i-x_position)**2\
+                        +(j-y_position)**2+\
+                        (k-z_position)**2)/100.0);
+                ni[i, j, k]=1.0E14+1.0E14*np.exp(-(((i-x_position)**2)\
+                        +((j-y_position)**2)+\
+                        ((k-z_position)**2))/100.0)
+
+def BC_densities(ne, ni):
+     # BC on densities
+    ne[imax+1, 0:jmax+1, 0:kmax] = ne[1, 0:jmax+1, 0:kmax]
+    ni[imax+1, 0:jmax+1, 0:kmax] = ni[1, 0:jmax+1, 0:kmax]
+
+    ne[0:jmax+1, jmax+1, 0:kmax] = ne[0:jmax+1, 1, 0:kmax]
+    ni[0:jmax+1, jmax+1, 0:kmax] = ni[0:jmax+1, 1, 0:kmax]
+
+    ne[0, 0:jmax+1, 0:kmax] = ne[imax, 0:jmax+1, 0:kmax]
+    ni[0, 0:jmax+1, 0:kmax] = ni[imax, 0:jmax+1, 0:kmax]
+
+    ne[0:jmax+1, 0, 0:kmax] = ne[0:jmax+1, jmax, 0:kmax]
+    ni[0:jmax+1, 0, 0:kmax] = ni[0:jmax+1, jmax, 0:kmax]
+
+
+def poisson_brute(V, g, num_iterations, imax, jmax, kmax, h=h, w=w):
+    for kk in range(num_iterations):
+        for i in range(1, imax+1):
+            for j in range(1, jmax+1):
+                for k in range(1, kmax-1):
+                    r = V[i+1, j, k] / 6. + V[i-1, j, k] / 6. + V[i, j+1, k] / 6. + V[i, j-1, k] / 6. + V[i ,j, k+1] / 6. + V[i, j, k-1] / 6. - V[i, j, k] - (h**2) * g[i, j, k] / 6.
+                    r = w * r
+                    V[i, j, k] += r
+    return V
+
+def plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv):
+    w = pv.w
+    h = pv.h
+    num_iterations = pv.num_iterations
+   # Here we calculate the right hand side of the Poisson equation
+    g[1:imax+1, 1:jmax+1, 1:kmax-1]=-(ne[1:imax+1, 1:jmax+1, 1:kmax-1]*qe\
+            +ni[1:imax+1, 1:jmax+1, 1:kmax-1]*qi)/eps0;
+    #print("Starting poisson")
+    ################################333
+    #V1 = pv.poisson_fast_no_loop(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
+    V1 = pv.poisson_fast_no_loop_torch(V.view(-1, 1),  g.view(-1, 1)).view(n1, n2, n3)
+    ################################333
+    #V2 = poisson_brute(V*1., g*1., 40, pv.imax, pv.jmax, pv.kmax, pv.h, pv.w)
+    #V3 = pv.poisson_brute_main(V*1., g*1.)
+    #V[:, :, :] = pv.poisson_brute_main_flat(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
+    #stat_diff(V1, V2, "fast no loop vs brute here")
+    #stat_diff(V2, V3, "brute pv loop vs brute here")
+    V = V1
+
+
+    V[imax+1, 0:jmax+1, 0:kmax]=V[1, 0:jmax+1, 0:kmax];
+    V[0:jmax+1, jmax+1, 0:kmax]=V[0:jmax+1, 1, 0:kmax];
+    V[0, 0:jmax+1, 0:kmax]=V[imax, 0:jmax+1, 0:kmax];
+    V[0:jmax+1, 0, 0:kmax]=V[0:jmax+1, jmax, 0:kmax];
+
+    return V, g
 
 
 
-def rel_error(x, y):
-  """ re-turns relative error """
-  return np.max(np.abs(x - y) / (np.maximum(1e-8, np.abs(x) + np.abs(y))))
+def electric_field_elements(V, ne, ni, Ez, Ex, Ey, difxne, difxni, difyne, difyni, difzne, difzni):
+    Ez[1:imax+1, 1:jmax+1, 0:kmax-1] = \
+            (V[1:imax+1, 1:jmax+1, 0:kmax-1]
+            - V[1:imax+1, 1:jmax+1, 1:kmax])/h
 
-def stat_diff(V1, V2, n1, n2, n3):
-    print("relative error",  rel_error(V1, V2))
-    #print(np.where(np.abs(V1 - V2) > 20))
+    difzne[1:imax+1, 1:jmax+1, 0:kmax-1]=\
+        (ne[1:imax+1, 1:jmax+1, 1:kmax]\
+        -ne[1:imax+1, 1:jmax+1, 0:kmax-1])/h;
+    difzni[1:imax+1, 1:jmax+1, 0:kmax-1]=\
+        (ni[1:imax+1, 1:jmax+1, 1:kmax]\
+        -ni[1:imax+1, 1:jmax+1, 0:kmax-1])/h;
+
+    Ex[1:imax+1, 1:jmax+1, 1:kmax-1] = (V[1:imax+1, 1:jmax+1, 1:kmax-1]-\
+            V[1+1:imax+1+1, 1:jmax+1, 1:kmax-1]) / h
+    Ey[1:imax+1, 1:jmax+1, 1:kmax-1] = (V[1:imax+1, 1:jmax+1, 1:kmax-1]-\
+            V[1:imax+1, 1+1:jmax+1+1, 1:kmax-1]) / h
+
+    difxne[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+            (ne[2:imax+1+1, 1:jmax+1, 1:kmax-1] - ne[1:imax+1, 1:jmax+1, 1:kmax-1]) / h
+    difxni[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+            (ni[2:imax+1+1, 1:jmax+1, 1:kmax-1] - ni[1:imax+1, 1:jmax+1, 1:kmax-1]) / h
+    difyne[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+            (ne[1:imax+1, 2:jmax+1+1, 1:kmax-1] - ne[1:imax+1, 1:jmax+1, 1:kmax-1]) / h
+    difyni[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+            (ni[1:imax+1, 2:jmax+1+1, 1:kmax-1] - ne[1:imax+1, 1:jmax+1, 1:kmax-1]) / h
+
+def average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni):
+    Exy[2:imax+1, 1:jmax, 1:kmax-1] = .25*(Ex[2:imax+1, 1:jmax, 1:kmax-1] +\
+            Ex[2:imax+1, 2:jmax+1, 1:kmax-1] + Ex[1:imax, 1:jmax, 1:kmax-1] + \
+            Ex[1:imax, 2:jmax+1, 1:kmax-1])
+    difxyne[2:imax+1, 1:jmax, 1:kmax-1] = .25*(difxne[2:imax+1, 1:jmax, 1:kmax-1] +\
+            difxne[2:imax+1, 2:jmax+1, 1:kmax-1] + difxne[1:imax, 1:jmax, 1:kmax-1]) +\
+            difxne[1:imax, 2:jmax+1, 1:kmax-1]
+    difxyni[2:imax+1, 1:jmax, 1:kmax-1] = .25*(difxni[2:imax+1, 1:jmax, 1:kmax-1] +\
+            difxni[2:imax+1, 2:jmax+1, 1:kmax-1] + difxni[1:imax, 1:jmax, 1:kmax-1]) +\
+            difxni[1:imax, 2:jmax+1, 1:kmax-1]
+
+    Exy[1, 1:jmax, 1:kmax-1] = .25*(Ex[1, 1:jmax, 1:kmax-1] +\
+            Ex[1, 2:jmax+1, 1:kmax-1] \
+            + Ex[imax, 1:jmax, 1:kmax-1]\
+            + Ex[imax, 2:jmax+1, 1:kmax-1])
+
+
+    difxyne[1, 1:jmax, 1:kmax-1]=0.25*(difxne[1, 1:jmax, 1:kmax-1]+difxne[1, 2:jmax+1, 1:kmax-1]+difxne[imax, 1:jmax, 1:kmax-1]+difxne[imax, 2:jmax+1, 1:kmax-1]);
+    difxyni[1, 1:jmax, 1:kmax-1]=0.25*(difxni[1, 1:jmax, 1:kmax-1]+difxni[1, 2:jmax+1, 1:kmax-1]+difxni[imax, 1:jmax, 1:kmax-1]+difxni[imax, 2:jmax+1, 1:kmax-1]);
+
+    Exy[1:imax, jmax, 1:kmax-1]= \
+            0.25*(Ex[1:imax, jmax, 1:kmax-1]+Ex[1:imax, 1, 1:kmax-1]+Ex[0:imax-1, jmax, 1:kmax-1]+Ex[0:imax-1, 1, 1:kmax-1]) ;
+
+    difxyne[1:imax, jmax, 1:kmax-1]=\
+            0.25*(difxne[1:imax, jmax, 1:kmax-1]+difxne[1:imax, 1, 1:kmax-1]+difxne[0:imax-1, jmax, 1:kmax-1]+difxne[0:imax-1, 1, 1:kmax-1]);
+    difxyni[1:imax, jmax, 1:kmax-1]=\
+            0.25*(difxni[1:imax, jmax, 1:kmax-1]+difxni[1:imax, 1, 1:kmax-1]+difxni[0:imax-1, jmax, 1:kmax-1]+difxni[0:imax-1, 1, 1:kmax-1]);
+
+    Exy[imax, jmax, 1:kmax-1]=(Ex[imax, jmax, 1:kmax-1]+Ex[imax-1, jmax, 1:kmax-1]+Ex[imax-1, 1, 1:kmax-1])/3.0;
+    difxyne[imax, jmax, 1:kmax-1]=(difxne[imax, jmax, 1:kmax-1]+difxne[imax-1, jmax, 1:kmax-1]+difxne[imax-1, 1, 1:kmax-1])/3.0;
+    difxyni[imax, jmax, 1:kmax-1]=(difxni[imax, jmax, 1:kmax-1]+difxni[imax-1, jmax, 1:kmax-1]+difxni[imax-1, 1, 1:kmax-1])/3.0;
+
+    Exy[1, jmax, 1:kmax-1]=(Ex[1, jmax, 1:kmax-1]+Ex[imax, jmax, 1:kmax-1]+Ex[1, 1, 1:kmax-1])/3.0;
+    difxyne[1, jmax, 1:kmax-1]=(difxne[1, jmax, 1:kmax-1]+difxne[imax, jmax, 1:kmax-1]+difxne[1, 1, 1:kmax-1])/3.0;
+    difxyni[1, jmax, 1:kmax-1]=(difxni[1, jmax, 1:kmax-1]+difxni[imax, jmax, 1:kmax-1]+difxni[1, 1, 1:kmax-1])/3.0;
+
+
+
+def flux_x(ne, ni, fex, fix, Ex, Exy, difxne, difxni, difxyne, difxyni):
+    fex[1:imax+1, 1:jmax+1, 1:kmax-1]=\
+            (-(ne[1:imax+1, 1:jmax+1, 1:kmax-1]*0.5\
+            +ne[2:imax+1+1, 1:jmax+1, 1:kmax-1])*mue\
+            *Ex[1:imax+1, 1:jmax+1, 1:kmax-1]\
+            -difxne[1:imax+1, 1:jmax+1, 1:kmax-1]*dife
+            +difxyne[1:imax+1, 1:jmax+1, 1:kmax-1]*wce*dife/nue\
+                    +(ne[1:imax+1, 1:jmax+1, 1:kmax-1]\
+                    +ne[2:imax+1+1, 1:jmax+1, 1:kmax-1])*wce*q*0.5/\
+                    (me*nue*nue)*Exy[1:imax+1, 1:jmax+1, 1:kmax-1])/denominator_e;
+
+    fix[1:imax+1, 1:jmax+1, 1:kmax-1]=\
+            (0.5*(ni[1:imax+1, 1:jmax+1, 1:kmax-1]\
+            +ni[2:imax+1+1, 1:jmax+1, 1:kmax-1])\
+            *Ex[1:imax+1, 1:jmax+1, 1:kmax-1]*mui\
+            -difxni[1:imax+1, 1:jmax+1, 1:kmax-1]*difi\
+            -difxyni[1:imax+1, 1:jmax+1, 1:kmax-1]*wci*difi/nui\
+            +(ni[1:imax+1, 1:jmax+1, 1:kmax-1]+ni[2:imax+1+1, 1:jmax+1, 1:kmax-1])*wci*q*0.5\
+            *Exy[1:imax+1, 1:jmax+1, 1:kmax-1]/(mi*nui*nui))/denominator_i;
+
+    fex[0, 1:jmax+1, 1:kmax-1] = fex[imax, 1:jmax+1, 1:kmax-1];
+    fix[0, 1:jmax+1, 1:kmax-1] = fix[imax, 1:jmax+1, 1:kmax-1];
+
+
+def average_y(ne, ni, Ey, Exy, difyne, difyni, difxyne, difxyni):
+    Exy[1:imax, 2:jmax+1, 1:kmax-1]= 0.25*(Ey[1:imax, 2:jmax+1, 1:kmax-1]+Ey[1:imax, 1:jmax+1-1, 1:kmax-1]+Ey[2:imax+1, 2:jmax+1, 1:kmax-1]+Ey[2:imax+1, 1:jmax+1-1, 1:kmax-1]); 
+    difxyne[1:imax, 2:jmax+1, 1:kmax-1]= 0.25*(difyne[1:imax, 2:jmax+1, 1:kmax-1]+difyne[1:imax, 1:jmax+1-1, 1:kmax-1]+difyne[2:imax+1, 2:jmax+1, 1:kmax-1]+difyne[2:imax+1, 1:jmax+1-1, 1:kmax-1]);
+    difxyni[1:imax, 2:jmax+1, 1:kmax-1]= 0.25*(difyni[1:imax, 2:jmax+1, 1:kmax-1]+difyni[1:imax, 1:jmax+1-1, 1:kmax-1]+difyni[2:imax+1, 2:jmax+1, 1:kmax-1]+difyni[2:imax+1, 1:jmax+1-1, 1:kmax-1]);
+
+    Exy[1:imax, 1, 1:kmax-1]= 0.25*(Ey[1:imax, 1, 1:kmax-1]+Ey[1:imax, jmax, 1:kmax-1]+Ey[2:imax+1, 1, 1:kmax-1]+Ey[2:imax+1, jmax, 1:kmax-1]);
+    difxyne[1:imax, 1, 1:kmax-1]= 0.25*(difyne[1:imax, 1, 1:kmax-1]+difyne[1:imax, jmax, 1:kmax-1]+difyne[2:imax+1, 1, 1:kmax-1]+difyne[2:imax+1, jmax, 1:kmax-1]);
+    difxyni[1:imax, 1, 1:kmax-1]= 0.25*(difyni[1:imax, 1, 1:kmax-1]+difyni[1:imax, jmax, 1:kmax-1]+difyni[2:imax+1, 1, 1:kmax-1]+difyni[2:imax+1, jmax, 1:kmax-1]);
+
+
+    Exy[imax, 2:jmax+1, 1:kmax-1]= 0.25*(Ey[imax, 2:jmax+1, 1:kmax-1]+Ey[imax, 1:jmax+1-1, 1:kmax-1]+Ey[1, 2:jmax+1, 1:kmax-1]+Ey[1, 1:jmax+1-1, 1:kmax-1]); 
+    difxyne[imax, 2:jmax+1, 1:kmax-1]= 0.25*(difyne[imax, 2:jmax+1, 1:kmax-1]+difyne[imax, 1:jmax+1-1, 1:kmax-1]+difyne[1, 2:jmax+1, 1:kmax-1]+difyne[1, 1:jmax+1-1, 1:kmax-1]);
+    difxyni[imax, 2:jmax+1, 1:kmax-1]= 0.25*(difyni[imax, 2:jmax+1, 1:kmax-1]+difyni[imax, 1:jmax+1-1, 1:kmax-1]+difyni[1, 2:jmax+1, 1:kmax-1]+difyni[1, 1:jmax+1-1, 1:kmax-1]);
+
+
+    Exy[imax, 1, 1:kmax-1]=(Ey[imax, 1, 1:kmax-1]+Ey[1, 1, 1:kmax-1]+Ey[imax, jmax, 1:kmax-1])/3.0;
+    difxyne[imax, 1, 1:kmax-1]=(difyne[imax, 1, 1:kmax-1]+difyne[1, 1, 1:kmax-1]+difyne[imax, jmax, 1:kmax-1])/3.0;
+    difxyni[imax, 1, 1:kmax-1]=(difyni[imax, 1, 1:kmax-1]+difyni[1, 1, 1:kmax-1]+difyni[imax, jmax, 1:kmax-1])/3.0; 
+    Exy[imax, jmax, 1:kmax-1]=(Ey[imax, jmax-1, 1:kmax-1]+Ey[imax, jmax, 1:kmax-1]+Ey[1, jmax-1, 1:kmax-1])/3.0;
+    difxyne[imax, jmax, 1:kmax-1]=(difyne[imax, jmax-1, 1:kmax-1]+difyne[imax, jmax, 1:kmax-1]+difyne[1, jmax-1, 1:kmax-1])/3.0;
+    difxyni[imax, jmax, 1:kmax-1]=(difyni[imax, jmax-1, 1:kmax-1]+difyni[imax, jmax, 1:kmax-1]+difyni[1, jmax-1, 1:kmax-1])/3.0; 
+
+def flux_y(ne, ni, fey, fiy, Ey, Ez, Exy, difyne, difyni, difxyne, difxyni):
+    fey[1:imax+1, 1:jmax+1, 1:kmax-1]= \
+            (-(ne[1:imax+1, 2:jmax+1+1, 1:kmax-1]+ne[1:imax+1, 1:jmax+1, 1:kmax-1])*0.5\
+            *Ey[1:imax+1, 1:jmax+1, 1:kmax-1]*mue\
+            -difyne[1:imax+1, 1:jmax+1, 1:kmax-1]*dife\
+            -(ne[1:imax+1, 2:jmax+1+1, 1:kmax-1]+ne[1:imax+1, 1:jmax+1, 1:kmax-1])*wce*q*0.5\
+            *Exy[1:imax+1, 1:jmax+1, 1:kmax-1]/(me*nue*nue)\
+            -difxyne[1:imax+1, 1:jmax+1, 1:kmax-1]*wce*dife/nue)/denominator_e;
+
+    fiy[1:imax+1, 1:jmax+1, 1:kmax-1]= \
+            ((ni[1:imax+1, 2:jmax+1+1, 1:kmax-1]*0.5\
+            +ni[1:imax+1, 1:jmax+1, 1:kmax-1])\
+            *Ey[1:imax+1, 1:jmax+1, 1:kmax-1]*mui\
+            -difyni[1:imax+1, 1:jmax+1, 1:kmax-1]*difi
+    -(ni[1:imax+1, 2:jmax+1+1, 1:kmax-1]+ni[1:imax+1, 1:jmax+1, 1:kmax-1])*wci*q*0.5\
+            *Exy[1:imax+1, 1:jmax+1, 1:kmax-1]/(mi*nui*nui)\
+            +difxyni[1:imax+1, 1:jmax+1, 1:kmax-1]*wci*difi/nui)/denominator_i;
+
+
+    fey[1:imax+1, 0, 1:kmax-1] = fey[1:imax+1, jmax, 1:kmax-1];
+    fiy[1:imax+1, 0, 1:kmax-1] = fiy[1:imax+1, jmax, 1:kmax-1];
+
+def flux_z(ne, ni, Ez, fez, fiz, difzne, difzni):
+    fez[1:imax+1, 1:jmax+1, 1:kmax-1]=\
+            -(ne[1:imax+1, 1:jmax+1, 1:kmax-1]\
+            +ne[1:imax+1, 1:jmax+1, 2:kmax-1+1])*.5\
+            *Ez[1:imax+1, 1:jmax+1, 1:kmax-1]*mue\
+            -difzne[1:imax+1, 1:jmax+1, 1:kmax-1]*dife;
+
+    fiz[1:imax+1, 1:jmax+1, 1:kmax-1]=\
+            (ni[1:imax+1, 1:jmax+1, 1:kmax-1]\
+            +ni[1:imax+1, 1:jmax+1, 2:kmax-1+1])*0.5\
+            *Ez[1:imax+1, 1:jmax+1, 1:kmax-1]*mui\
+            -difzni[1:imax+1, 1:jmax+1, 1:kmax-1]*difi;
+
+    fez[:, :, 1] = fez[:, :, 1] * (fez[:, :, 1] <= 0).double()
+    fiz[:, :, 1] = fiz[:, :, 1] * (fiz[:, :, 1] <= 0).double()
+    fez[:, :, kmax-1] = fez[:, :, kmax-1] * (fez[:, :, kmax-1] <= 0).double()
+    fiz[:, :, kmax-1] = fiz[:, :, kmax-1] * (fiz[:, :, kmax-1] <= 0).double()
+
 
 def main():
-    imax = 8
-    jmax = 8
-    kmax = 8
-    upper_lim = 3
-    n1 = imax + upper_lim
-    n2 = jmax + upper_lim
-    n3 = kmax + upper_lim
-    w = 1.843
-    pv = poisson_vectorized(n1, n2, n3, w=w, num_iterations=40, method='ndarray'\
-                                    , upper_lim=upper_lim)
-    V1 = (np.random.rand(n1 * n2 * n3) * 30  + 1).astype('float32')
-    g = (np.random.rand(n1 * n2 * n3) * 2e5  + -1e5).astype('float32')
+    g       = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    R       = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    ne      = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    ni      = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    V       = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    Ex      = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    Ey      = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    Ez      = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    fex     = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    fey     = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    fez     = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    fix     = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    fiy     = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    fiz     = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    difxne  = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    difxni  = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    difyne  = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    difyni  = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    difzne  = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    difzni  = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    Exy     = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    difxyne = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    difxyni = torch.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim)).double()
+    want_cuda = False
+    if torch.cuda.is_available() and want_cuda:
+        print("cuda available")
+        g = g.cuda()
+        R = R.cuda()
+        ne = ne.cuda()
+        ni = ni.cuda()
+        V = V.cuda()
+        Ex = Ex.cuda()
+        Ey = Ey.cuda()
+        Ez = Ez.cuda()
+        fex = fex.cuda()
+        fey = fey.cuda()
+        fez = fez.cuda()
+        fix = fix.cuda()
+        fiy = fiy.cuda()
+        fiz = fiz.cuda()
+        difxne = difxne.cuda()
+        difxni = difxni.cuda()
+        difyne = difyne.cuda()
+        difyni = difyni.cuda()
+        difzne = difzne.cuda()
+        difzni = difzni.cuda()
+        Exy = Exy.cuda()
+        difxyne = difxyne.cuda()
+        difxyni = difxyni.cuda()
+   
+    method = 'ndarray'
+    pv = poisson_vectorized(imax+upper_lim, jmax+upper_lim, kmax+upper_lim,\
+            w=w, h=h, num_iterations=40, method=method\
+            , upper_lim=upper_lim, want_cuda=want_cuda)
 
-    for I in range(0, n1*n2*n3):
-        k = I % n3
-        s1 = (I - k) // n3
-        j = s1 % n2
-        i = (s1 - j) // n2
-        #print(I, i, j, k)
-        if (i*j*k==0 or k >= kmax - 1 or j >= jmax - 1 or i >= imax - 1):
-            g[I] = 0
-            V1[I] = 0
-    V1_reshaped = V1.reshape(n1, n2, n3)
-    g_reshaped = g.reshape(n1, n2, n3)
 
-                   
-    print("Starting poisson no loop")
-    start = time.time()
-    no_loop = pv.poisson_fast_no_loop(V1 * 1., g*1.)
-    print("Time taken: %f"%(time.time() - start))
+    density_initialization(ne, ni, 15,15,15);
 
-    print("Starting poisson one loop")
-    start = time.time()
-    one_loop = pv.poisson_fast_one_loop(V1 * 1., g*1.)
-    print("Time taken: %f"%(time.time() - start))
+    si = torch.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
+    #printf("si before loop: %f", si);
+    #printf("ne[%d, %d, %d] = %e\n", 5, 6, 7, ne[5, 6, 7]);
+    #printf("ni[%d, %d, %d] = %e\n", 5, 6, 7, ni[5, 6, 7]);
+    BC_densities(ne, ni)
+    
+    start = Time.time()
+    for time in range(1, tmax):
+        V, g = plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv)
+        #printf("V[%d, %d, %d] = %f\n", 5, 6, 7, V[5, 6, 7]);
+        electric_field_elements(V, ne, ni, Ez, Ex, Ey, difxne, difxni, difyne, difyni, difzne, difzni)
+        average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni)
+        flux_y(ne, ni, fey, fiy, Ey, Ez, Exy, difyne, difyni, difxyne, difxyni)
+        average_y(ne, ni, Ey, Exy, difyne, difyni, difxyne, difxyni)
+        flux_x(ne, ni, fex, fix, Ex, Exy, difxne, difxni, difxyne, difxyni)
+        flux_z(ne, ni, Ez, fez, fiz, difzne, difzni)
 
-    print("Starting poisson brute main")
-    start = time.time()
-    brute_main = pv.poisson_brute_main(V1.reshape(n1, n2, n3) , g.reshape(n1, n2, n3))
-    print("Time taken: %f"%(time.time() - start))
+        ne[1:imax+1, 1:jmax+1, 1:kmax] = \
+            ne[1:imax+1, 1:jmax+1, 1:kmax] -\
+            dt * (\
+              fex[1:imax+1, 1:jmax+1, 1:kmax  ] \
+            - fex[0:imax  , 1:jmax+1, 1:kmax  ] \
+            + fey[1:imax+1, 1:jmax+1, 1:kmax  ] \
+            - fey[1:imax+1, 0:jmax  , 1:kmax  ] \
+            + fez[1:imax+1, 1:jmax+1, 1:kmax  ] \
+            - fez[1:imax+1, 1:jmax+1, 0:kmax-1])/h
+#                
+        ni[1:imax+1, 1:jmax+1, 1:kmax] = \
+            ni[1:imax+1, 1:jmax+1, 1:kmax] -\
+            dt * (
+              fix[1:imax+1, 1:jmax+1, 1:kmax] \
+            - fix[0:imax, 1:jmax+1, 1:kmax] \
+            + fiy[1:imax+1, 1:jmax+1, 1:kmax] \
+            - fiy[1:imax+1, 0:jmax, 1:kmax] \
+            + fiz[1:imax+1, 1:jmax+1, 1:kmax] \
+            - fiz[1:imax+1, 1:jmax+1, 0:kmax-1])/h
 
-    stat_diff(no_loop, brute_main.reshape(n1*n2*n3), n1, n2, n3)
-    stat_diff(no_loop, one_loop, n1, n2, n3)
+        ne[1:imax+1, 1:jmax+1, 0] = -dt * fez[1:imax+1, 1:jmax+1, 0] / h
+        ni[1:imax+1, 1:jmax+1, 0] = -dt * fiz[1:imax+1, 1:jmax+1, 0] / h
 
-if __name__ == "__main__":
+        BC_densities(ne, ni)
+
+        sf = torch.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
+        
+        alpha = (si -sf) / sf;
+        ne[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+                ne[1:imax+1, 1:jmax+1, 1:kmax-1] +\
+                alpha * ne[1:imax+1, 1:jmax+1, 1:kmax-1]
+
+        #printf("%d \n", time);
+    time_taken2 = Time.time() - start
+    print("Time taken: %f"%(time_taken2))
+    return V, g, pv
+
+if __name__=="__main__":
     main()

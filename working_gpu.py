@@ -9,6 +9,8 @@ import tensorflow as tf
 from scipy.sparse import csr_matrix, lil_matrix, coo_matrix, eye
 import time
 import os.path
+import torch
+
 def mat_pow(a, k, b):
     if k == 0:
         m = np.eye(a.shape[0])
@@ -38,7 +40,7 @@ def load_sparse_csr(filename):
 
 class poisson_vectorized:
     def __init__(self, n1, n2, n3, w, num_iterations=40, h=1e-3, method='ndarray',\
-            upper_lim=3):
+            upper_lim=3, want_cuda=False):
         self.n1 = n1
         self.n2 = n2
         self.n3 = n3
@@ -52,13 +54,13 @@ class poisson_vectorized:
         keys = ['poisson', 'g']
         if self.method == 'lil' or method == 'coo1':
             for key in keys:
-                self.kernels[key] = lil_matrix((n1*n2*n3, n1*n2*n3), dtype='float32')
+                self.kernels[key] = lil_matrix((n1*n2*n3, n1*n2*n3), dtype='float64')
         elif method == 'coo':
             for key in keys:
-                self.kernels[key] = np.zeros((n1*n2*n3, n1*n2*n3), dtype='float32')
+                self.kernels[key] = np.zeros((n1*n2*n3, n1*n2*n3), dtype='float64')
         elif self.method == 'ndarray':
             for key in keys:
-                self.kernels[key] = np.zeros((n1*n2*n3, n1*n2*n3), dtype='float32')
+                self.kernels[key] = np.zeros((n1*n2*n3, n1*n2*n3), dtype='float64')
         print("method used is %s"%(self.method))
         self.w = w
         self.h = h
@@ -117,13 +119,13 @@ class poisson_vectorized:
         if self.method == 'coo':
             print("Starting coo conversion")
             for key in self.kernels:
-                self.kernels[key] = coo_matrix(self.kernels[key], (n1*n2*n3, n1*n2*n3), dtype='float32')
+                self.kernels[key] = coo_matrix(self.kernels[key], (n1*n2*n3, n1*n2*n3), dtype='float64')
         # uncomment in order to make fast1 work
         # fast1 is less efficient that fast due to chain matrix multiplicaiton order
         # rule.
 
         if self.method == 'coo':
-            self.B = lil_matrix(eye(n1*n2*n3, n1*n2*n3), dtype='float32')
+            self.B = lil_matrix(eye(n1*n2*n3, n1*n2*n3), dtype='float64')
         elif self.method == 'ndarray':
             self.B = np.eye(n1*n2*n3, n1*n2*n3)
 
@@ -151,8 +153,8 @@ class poisson_vectorized:
         #        self.B += self.A
         #        self.A = self.kernels['poisson'].dot(self.A)
         #    print('converting large A and B to coo format to store')
-        #    self.B = coo_matrix(self.B, (n1*n2*n3, n1*n2*n3), dtype='float32')
-        #    self.A = coo_matrix(self.B, (n1*n2*n3, n1*n2*n3), dtype='float32')
+        #    self.B = coo_matrix(self.B, (n1*n2*n3, n1*n2*n3), dtype='float64')
+        #    self.A = coo_matrix(self.B, (n1*n2*n3, n1*n2*n3), dtype='float64')
 
         #    print("saving self.B: ")
         #    save_sparse_csr(B_file_name, self.B.tocsr())
@@ -164,11 +166,11 @@ class poisson_vectorized:
             B_file_name = 'self_B_%d_%d_%d_%d_ndarray.npy'%(n1, n2, n3, self.num_iterations)
             if os.path.isfile(A_file_name):
                 print("%s exists"%(A_file_name))
-                self.A = np.load(A_file_name)
+                self.A = np.load(A_file_name).astype('float64')
                 Afound = True
             if os.path.isfile(B_file_name):
                 print("%s exists"%(B_file_name))
-                self.B = np.load(B_file_name)
+                self.B = np.load(B_file_name).astype('float64')
                 Bfound = True
             if (not Afound and not Bfound):
                 self.A = self.kernels['poisson']
@@ -179,6 +181,15 @@ class poisson_vectorized:
                     self.A = self.kernels['poisson'].dot(self.A)
                 np.save(A_file_name, self.A)
                 np.save(B_file_name, self.B)
+            print("converting to torch...")
+            self.Atorch = torch.from_numpy(self.A)
+            self.Btorch = torch.from_numpy(self.B)
+            self.kernels['g_torch'] = torch.from_numpy(self.kernels['g'])
+            if torch.cuda.is_available() and want_cuda:
+                print("cuda available in pv")
+                self.Atorch = self.Atorch.cuda()
+                self.Btorch = self.Btorch.cuda()
+                self.kernels['g_torch'] = self.kernels['g_torch'].cuda()
 
             print("finished!!")
 
@@ -245,6 +256,11 @@ class poisson_vectorized:
         return self.A.dot((V)) \
                 - self.B.dot(g) \
 
+    def poisson_fast_no_loop_torch(self, V, g):
+        g = g * self.w * self.h2 / 6.
+        g = torch.mm(self.kernels['g_torch'], g)
+        return torch.mm(self.Atorch, V) - torch.mm(self.Btorch, g)
+
     def poisson_fast_no_loop_gpu(self, V, g):
         g = self.w * self.h2 * g / 6.
         for I in range(0, self.n1*self.n2*self.n3):
@@ -261,10 +277,10 @@ class poisson_vectorized:
                       ( g[I-1]
                       + g[I-self.n3]
                       + g[I-self.n3*self.n2])
-        Atf = tf.placeholder(tf.float32, shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
-        Btf = tf.placeholder(tf.float32, shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
-        Vtf = tf.placeholder(tf.float32, shape=[self.n1*self.n2*self.n3, 1])
-        gtf = tf.placeholder(tf.float32, shape=[self.n1*self.n2*self.n3, 1])
+        Atf = tf.placeholder(tf.float64, shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
+        Btf = tf.placeholder(tf.float64, shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
+        Vtf = tf.placeholder(tf.float64, shape=[self.n1*self.n2*self.n3, 1])
+        gtf = tf.placeholder(tf.float64, shape=[self.n1*self.n2*self.n3, 1])
         out = tf.matmul(Atf, Vtf) - tf.matmul(Btf, gtf)
         with tf.Session() as sess:
             out = sess.run(out, feed_dict = {Atf:self.A, Btf:self.B, Vtf:V, gtf:g})
@@ -329,7 +345,7 @@ class poisson_vectorized:
         return temp
 
     def poisson_brute3_gpu(self, V, g, sess):
-        out = tf.Variable(tf.float32, V)
+        out = tf.Variable(tf.float64, V)
         #for kk in range(self.num_iterations):
         #    out[1:self.imax-1, 1:self.jmax-1, 1:self.kmax-1].assign(out[1:self.imax-1, 1:self.jmax-1, 1:self.kmax-1] + 1)
         sess.run(out)
@@ -377,8 +393,8 @@ def main():
     w = 1.843
     pv = poisson_vectorized(n1, n2, n3, w=w, num_iterations=40, method='coo'\
                                     , upper_lim=upper_lim)
-    V1 = (np.random.rand(n1 * n2 * n3) * 30  + 1).astype('float32')
-    g = (np.random.rand(n1 * n2 * n3) * 2e5  + -1e5).astype('float32')
+    V1 = (np.random.rand(n1 * n2 * n3) * 30  + 1).astype('float64')
+    g = (np.random.rand(n1 * n2 * n3) * 2e5  + -1e5).astype('float64')
 
     for I in range(0, n1*n2*n3):
         k = I % n3

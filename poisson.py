@@ -100,16 +100,16 @@ def plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv):
     print("Starting poisson")
     start = Time.time()
     ################################333
-    #V1 = pv.poisson_fast_no_loop(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
+    V1 = pv.poisson_fast_no_loop(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
     ################################333
-    V2 = poisson_brute(V*1., g*1., 40, pv.imax, pv.jmax, pv.kmax, pv.h, pv.w)
+    #V2 = poisson_brute(V*1., g*1., 40, pv.imax, pv.jmax, pv.kmax, pv.h, pv.w)
     #V3 = pv.poisson_brute_main(V*1., g*1.)
     #V[:, :, :] = pv.poisson_brute_main_flat(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
     #stat_diff(V1, V2, "fast no loop vs brute here")
     #stat_diff(V2, V3, "brute pv loop vs brute here")
     time_taken2 = Time.time() - start
     print("Time taken: %f"%(time_taken2))
-    V = V2
+    V = V1
 
 
     V[imax+1, 0:jmax+1, 0:kmax]=V[1, 0:jmax+1, 0:kmax];
