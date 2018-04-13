@@ -85,6 +85,17 @@ class poisson_vectorized:
                 self.kernels['poisson'][I, I+n3] += self.w*1./6
                 self.kernels['poisson'][I, I+n2*n3] += self.w*1./6
                 self.kernels['poisson'][I, I] += 1 - self.w
+#                g[I] +=self.w*1./6* \
+#                      ( g[I-1]
+#                      + g[I-self.n3]
+#                      + g[I-self.n3*self.n2])
+                self.kernels['g'][I, :] = self.w * 1./6*\
+                        (self.kernels['g'][I-1,:] \
+                        +self.kernels['g'][I-self.n3, :] \
+                        +self.kernels['g'][I-self.n3*self.n2, :] \
+                        )
+                self.kernels['g'][I, I] += 1
+
 
 #                self.kernels['x_gradient'][I, I] = -1
 #                self.kernels['x_gradient'][I, I+n2*n3] = 1
@@ -206,7 +217,7 @@ class poisson_vectorized:
         return sess, out
 
     #can be numerically unstable
-    def poisson_fast_no_loop(self, V, g):
+    def poisson_fast_no_loop_old(self, V, g):
         g = self.w * self.h2 * g / 6.
         for I in range(0, self.n1*self.n2*self.n3):
             k = I % self.n3
@@ -224,6 +235,13 @@ class poisson_vectorized:
                       + g[I-self.n3*self.n2])
             else:
                 g[I] = 0
+        return self.A.dot((V)) \
+                - self.B.dot(g) \
+
+    #can be numerically unstable
+    def poisson_fast_no_loop(self, V, g):
+        g = self.w * self.h2 * g / 6.
+        g = self.kernels['g'].dot(g)
         return self.A.dot((V)) \
                 - self.B.dot(g) \
 

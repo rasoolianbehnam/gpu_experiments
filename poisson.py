@@ -7,7 +7,7 @@ def printf(text, *args):
 imax=16
 jmax=16
 kmax=16
-tmax=4
+tmax=50
 upper_lim = 3
 n1 = imax+upper_lim
 n2 = jmax+upper_lim
@@ -100,22 +100,24 @@ def plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv):
     print("Starting poisson")
     start = Time.time()
     ################################333
-    V1 = pv.poisson_fast_no_loop(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
+    #V1 = pv.poisson_fast_no_loop(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
     ################################333
     V2 = poisson_brute(V*1., g*1., 40, pv.imax, pv.jmax, pv.kmax, pv.h, pv.w)
-    V3 = pv.poisson_brute_main(V*1., g*1.)
+    #V3 = pv.poisson_brute_main(V*1., g*1.)
     #V[:, :, :] = pv.poisson_brute_main_flat(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
-    stat_diff(V1, V2, "fast no loop vs brute here")
-    stat_diff(V2, V3, "brute pv loop vs brute here")
+    #stat_diff(V1, V2, "fast no loop vs brute here")
+    #stat_diff(V2, V3, "brute pv loop vs brute here")
     time_taken2 = Time.time() - start
     print("Time taken: %f"%(time_taken2))
-    V[:, :, :] = V1
+    V = V2
 
 
     V[imax+1, 0:jmax+1, 0:kmax]=V[1, 0:jmax+1, 0:kmax];
     V[0:jmax+1, jmax+1, 0:kmax]=V[0:jmax+1, 1, 0:kmax];
     V[0, 0:jmax+1, 0:kmax]=V[imax, 0:jmax+1, 0:kmax];
     V[0:jmax+1, 0, 0:kmax]=V[0:jmax+1, jmax, 0:kmax];
+
+    return V, g
 
 
 
@@ -284,7 +286,7 @@ def main():
     BC_densities(ne, ni)
     
     for time in range(1, tmax):
-        plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv)
+        V, g = plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv)
         printf("V[%d, %d, %d] = %f\n", 5, 6, 7, V[5, 6, 7]);
         electric_field_elements(V, ne, ni, Ez, Ex, Ey, difxne, difxni, difyne, difyni, difzne, difzni)
         average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni)
