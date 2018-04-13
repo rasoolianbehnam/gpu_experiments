@@ -1,5 +1,5 @@
 import numpy as np
-from working_torch import *
+from working_gpu import *
 import time as Time
 
 def printf(text, *args):
