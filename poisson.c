@@ -24,12 +24,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 
 // -----------------------------------------------------------------------------------------------
 // global variables
 // -----------------------------------------------------------------------------------------------
 
-int i,j,k,kk,imax=16,jmax=16,kmax=16,time,tmax=50;
+int i,j,k,kk,imax=32,jmax=32,kmax=64,myTime,tmax=50;
 double qi=1.6E-19,qe=-1.6E-19, kr,ki,si,sf,alpha;
 double q=1.6E-19,pie=3.14159,Ta,w,eps0,Te,Ti,B,Kb,me,mi,nue,nui,denominator_e,denominator_i,nn,dt,h,s,wce,wci,mue,mui,dife,difi;
 double  ne[35][35][67],ni[35][35][67],difxne[35][35][67],difyne[35][35][67],difxni[35][35][67],difyni[35][35][67];
@@ -79,7 +80,6 @@ void plasma_sim_initialize_simualtion_constants()
         }
       }
     }
-
 }
 
 
@@ -653,7 +653,8 @@ printf("si before loop: %f\n", si);
 
 
 
-    for (time=1; time<tmax; time++){  // This for loop takes care of time evolution
+    clock_t begin = clock();
+    for (myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime evolution
 
 
 
@@ -774,16 +775,16 @@ printf("si before loop: %f\n", si);
 
 
 
-      // if (time%100==0.0){
+      // if (myTime%100==0.0){
 
-        printf("%d \n", time);
+        printf("%d \n", myTime);
 
      //  }
 
 
 
 
-        if (time==50000000000){
+        if (myTime==50000000000){
 
          for (j=1; j<jmax+1; j++) {
            for (i=1; i<imax+1;i++) {
@@ -795,7 +796,7 @@ printf("si before loop: %f\n", si);
          }
         }
 
-        if (time==5000){
+        if (myTime==5000){
 
         for (k=1; k<kmax+1; k++) {
          for (j=1; j<jmax+1; j++) {
@@ -817,7 +818,9 @@ printf("si before loop: %f\n", si);
 
 
      }
-
+    clock_t end = clock();
+    double time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
+    printf("Time elapsed: %f\n", time_spent);
 
 
              printf("%f \n", V[15][15][15]);

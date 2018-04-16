@@ -5,3 +5,6 @@
 *.npy
 *.swo
 *.swp
+*.pyc
+octave-workspace
+__pycache__

@@ -5,10 +5,10 @@
 
 
 import numpy as np
+import tensorflow as tf
 from scipy.sparse import csr_matrix, lil_matrix, coo_matrix, eye
 import time
 import os.path
-import torch
 
 def mat_pow(a, k, b):
     if k == 0:
@@ -180,16 +180,19 @@ class poisson_vectorized:
                     self.A = self.kernels['poisson'].dot(self.A)
                 np.save(A_file_name, self.A)
                 np.save(B_file_name, self.B)
-            print("converting to torch...")
-            self.Atorch = torch.from_numpy(self.A)
-            self.Btorch = torch.from_numpy(self.B)
-            self.kernels['g_torch'] = torch.from_numpy(self.kernels['g'])
-            if torch.cuda.is_available() and want_cuda:
-                print("cuda available in pv")
-                self.Atorch = self.Atorch.cuda()
-                self.Btorch = self.Btorch.cuda()
-                self.kernels['g_torch'] = self.kernels['g_torch'].cuda()
 
+            self.Atf = tf.placeholder(tf.float64, \
+                    shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
+            self.Btf = tf.placeholder(tf.float64, \
+                    shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
+            self.g_kernel = tf.placeholder(tf.float64, \
+                    shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
+            self.Vtf = tf.placeholder(tf.float64, \
+                    shape=[self.n1*self.n2*self.n3, 1])
+            self.gtf = tf.placeholder(tf.float64, \
+                    shape=[self.n1*self.n2*self.n3, 1])
+            self.gtmp = tf.matmul(self.g_kernel, self.gtf)
+            self.out = tf.matmul(self.Atf, self.Vtf) - tf.matmul(self.Btf, self.gtmp)
             print("finished!!")
 
 
@@ -255,36 +258,17 @@ class poisson_vectorized:
         return self.A.dot((V)) \
                 - self.B.dot(g) \
 
-    def poisson_fast_no_loop_torch(self, V, g):
+    def poisson_fast_no_loop_tensor(self, V, g, sess):
         g = g * self.w * self.h2 / 6.
-        g = torch.mm(self.kernels['g_torch'], g)
-        return torch.mm(self.Atorch, V) - torch.mm(self.Btorch, g)
+        return sess.run(self.out, \
+                feed_dict={\
+                    self.Vtf:V\
+                    , self.gtf:g\
+                    , self.Atf:self.A\
+                    , self.Btf:self.B\
+                    , self.g_kernel:self.kernels['g']})
 
-    def poisson_fast_no_loop_gpu(self, V, g):
-        g = self.w * self.h2 * g / 6.
-        for I in range(0, self.n1*self.n2*self.n3):
-            k = I % self.n3
-            s1 = (I - k) // self.n3
-            j = s1 % self.n2
-            i = (s1 - j) // self.n2
-            #print(I, i, j, k)
-            if (i >= 1 and i < self.imax+1 and 
-                j >= 1 and j < self.jmax+1 and 
-                k >= 1 and k < self.kmax-1):
-                #print(I, i, j, k)
-                g[I] +=self.w*1./6* \
-                      ( g[I-1]
-                      + g[I-self.n3]
-                      + g[I-self.n3*self.n2])
-        Atf = tf.placeholder(tf.float64, shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
-        Btf = tf.placeholder(tf.float64, shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
-        Vtf = tf.placeholder(tf.float64, shape=[self.n1*self.n2*self.n3, 1])
-        gtf = tf.placeholder(tf.float64, shape=[self.n1*self.n2*self.n3, 1])
-        out = tf.matmul(Atf, Vtf) - tf.matmul(Btf, gtf)
-        with tf.Session() as sess:
-            out = sess.run(out, feed_dict = {Atf:self.A, Btf:self.B, Vtf:V, gtf:g})
-        return out
-
+    
     #@jit
     def poisson_brute2(self, V, g):
         for kk in range(self.num_iterations):
