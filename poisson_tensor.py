@@ -1,17 +1,54 @@
 import numpy as np
 from working_tensor import *
 import time as Time
+def slice_add(c, a, axes, N):
+    if len(axes) == 1:
+        n = N[0]
+        xs = axes[0]
+        print(n)
+        mask = tf.ones_like(c)
+        padding = tf.constant([[xs[0], n-xs[1]]])
+        c_pad = tf.pad(c, padding, 'CONSTANT')
+        print(c_pad)
+        mask = tf.cast(tf.pad(mask, padding, 'CONSTANT'), tf.bool)
+        return tf.where(mask, c_pad, a)    
+    elif len(axes) == 2:
+        n, m = N
+        xs = axes[0]
+        ys = axes[1]
+        print(n, m)
+        mask = tf.ones_like(c)
+        padding = tf.constant([[xs[0], n-xs[1]], [ys[0], m-ys[1]]])
+        c_pad = tf.pad(c, padding, 'CONSTANT')
+        print(c_pad)
+        mask = tf.cast(tf.pad(mask, padding, 'CONSTANT'), tf.bool)
+        return tf.where(mask, c_pad, a)
+    elif len(axes) == 3:
+        n, m, s = N
+        xs = axes[0]
+        ys = axes[1]
+        zs = axes[2]
+        #print(n, m,)
+        mask = tf.ones_like(c)
+        padding = tf.constant([[xs[0], n-xs[1]], [ys[0], m-ys[1]], [zs[0], s-zs[1]]])
+        c_pad = tf.pad(c, padding, 'CONSTANT')
+        #print(c_pad)
+        mask = tf.cast(tf.pad(mask, padding, 'CONSTANT'), tf.bool)
+
+    return tf.where(mask, c_pad, a)    
 
 def printf(text, *args):
     print(text%args)
+
 imax=16
 jmax=16
 kmax=16
-tmax=50
+tmax=500
 upper_lim = 3
 n1 = imax+upper_lim
 n2 = jmax+upper_lim
 n3 = kmax+upper_lim
+nnn = [n1, n2, n3]
 qi=1.6E-19
 qe=-1.6E-19
 q=1.6E-19
@@ -53,7 +90,9 @@ w=2.0/(1.0+np.sin(Ta));
 print("%f \n"%w);
 
 
-def density_initialization(ne, ni, x_position, y_position, z_position):
+def density_initialization(n1, n2, n3, x_position, y_position, z_position):
+    ne = np.zeros((n1, n2, n3))
+    ni = np.zeros((n1, n2, n3))
     for i in range(1, imax+1):
         for j in range(1, jmax+1):
             for k in range(1, kmax-1):
@@ -64,20 +103,34 @@ def density_initialization(ne, ni, x_position, y_position, z_position):
                 ni[i, j, k]=1.0E14+1.0E14*np.exp(-(((i-x_position)**2)\
                         +((j-y_position)**2)+\
                         ((k-z_position)**2))/100.0)
+    return tf.constant(ne, dtype=tf.float32), tf.constant(ni, dtype=tf.float32)
 
 def BC_densities(ne, ni):
      # BC on densities
-    ne[imax+1, 0:jmax+1, 0:kmax] = ne[1, 0:jmax+1, 0:kmax]
-    ni[imax+1, 0:jmax+1, 0:kmax] = ni[1, 0:jmax+1, 0:kmax]
+    indices = [[imax+1, imax+2], [0, jmax+1],  [0, kmax]]
+    ne_temp = ne[1:2, 0:jmax+1, 0:kmax]
+    ni_temp = ni[1:2, 0:jmax+1, 0:kmax]
+    ne = slice_add(ne_temp, ne, indices, nnn)
+    ni = slice_add(ne_temp, ne, indices, nnn)
 
-    ne[0:jmax+1, jmax+1, 0:kmax] = ne[0:jmax+1, 1, 0:kmax]
-    ni[0:jmax+1, jmax+1, 0:kmax] = ni[0:jmax+1, 1, 0:kmax]
+    indices = [[0, imax+1], [jmax+1, jmax+2],  [0, kmax]]
+    ne_temp = ne[0:jmax+1, 1:2, 0:kmax]
+    ni_temp = ni[0:jmax+1, 1:2, 0:kmax]
+    ne = slice_add(ne_temp, ne, indices, nnn)
+    ni = slice_add(ne_temp, ne, indices, nnn)
 
-    ne[0, 0:jmax+1, 0:kmax] = ne[imax, 0:jmax+1, 0:kmax]
-    ni[0, 0:jmax+1, 0:kmax] = ni[imax, 0:jmax+1, 0:kmax]
+    indices = [[0, 1], [0, jmax+1],  [0, kmax]]
+    ne_temp = ne[imax:imax+1, 0:jmax+1, 0:kmax]
+    ni_temp = ni[imax:imax+1, 0:jmax+1, 0:kmax]
+    ne = slice_add(ne_temp, ne, indices, nnn)
+    ni = slice_add(ne_temp, ne, indices, nnn)
 
-    ne[0:jmax+1, 0, 0:kmax] = ne[0:jmax+1, jmax, 0:kmax]
-    ni[0:jmax+1, 0, 0:kmax] = ni[0:jmax+1, jmax, 0:kmax]
+    indices = [[0,jmax+1], [ 0,1], [0,kmax]]
+    ne_temp = ne[0:jmax+1, jmax:jmax+1, 0:kmax]
+    ni_temp = ni[0:jmax+1, jmax:jmax+1, 0:kmax]
+    ne = slice_add(ne_temp, ne, indices, nnn)
+    ni = slice_add(ne_temp, ne, indices, nnn)
+
 
 
 def poisson_brute(V, g, num_iterations, imax, jmax, kmax, h=h, w=w):
@@ -95,13 +148,15 @@ def plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv, sess):
     h = pv.h
     num_iterations = pv.num_iterations
    # Here we calculate the right hand side of the Poisson equation
-    g[1:imax+1, 1:jmax+1, 1:kmax-1]=-(ne[1:imax+1, 1:jmax+1, 1:kmax-1]*qe\
+    indices = [[1, imax+1], [1, jmax+1], [1, kmax-1]]
+    g_temp=-(ne[1:imax+1, 1:jmax+1, 1:kmax-1]*qe\
             +ni[1:imax+1, 1:jmax+1, 1:kmax-1]*qi)/eps0;
+    g = slice_add(g_temp, g, indices, nnn)
     #print("Starting poisson")
     #start = Time.time()
     ################################333
     #V1 = pv.poisson_fast_no_loop(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
-    V1 = pv.poisson_fast_no_loop_tensor(V.reshape(-1, 1), g.reshape(-1, 1), sess).reshape(n1, n2, n3)
+    V1 = tf.reshape(pv.poisson_fast_no_loop_tensor(tf.reshape(V, [-1, 1]), tf.reshape(g, [-1, 1]), sess), [n1, n2, n3])
     ################################333
     #V2 = poisson_brute(V*1., g*1., 40, pv.imax, pv.jmax, pv.kmax, pv.h, pv.w)
     #V3 = pv.poisson_brute_main(V*1., g*1.)
@@ -113,51 +168,78 @@ def plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv, sess):
     V = V1
 
 
-    V[imax+1, 0:jmax+1, 0:kmax]=V[1, 0:jmax+1, 0:kmax];
-    V[0:jmax+1, jmax+1, 0:kmax]=V[0:jmax+1, 1, 0:kmax];
-    V[0, 0:jmax+1, 0:kmax]=V[imax, 0:jmax+1, 0:kmax];
-    V[0:jmax+1, 0, 0:kmax]=V[0:jmax+1, jmax, 0:kmax];
+    indices = [[imax+1, imax+2], [0,jmax+1], [0, kmax]]
+    V_temp=V[1:2, 0:jmax+1, 0:kmax];
+    V = slice_add(V_temp, V, indices, nnn)
+
+    indices = [[0,jmax+1], [jmax+1,jmax+2], [0, kmax]]
+    V_temp=V[0:jmax+1, 1:2, 0:kmax];
+    V = slice_add(V_temp, V, indices, nnn)
+
+    indices = [[0,1], [0, jmax+1], [0, kmax]]
+    V_temp=V[imax:imax+1, 0:jmax+1, 0:kmax];
+    V = slice_add(V_temp, V, indices, nnn)
+
+    indices = [[0,jmax+1], [0, 1], [0, kmax]]
+    V_temp=V[0:jmax+1, jmax:jmax+1, 0:kmax];
+    V = slice_add(V_temp, V, indices, nnn)
 
     return V, g
 
 
 
 def electric_field_elements(V, ne, ni, Ez, Ex, Ey, difxne, difxni, difyne, difyni, difzne, difzni):
-    Ez[1:imax+1, 1:jmax+1, 0:kmax-1] = \
-            (V[1:imax+1, 1:jmax+1, 0:kmax-1]
+    indices = [[1, imax+1], [1,jmax+1], [0,kmax-1]]
+    Ez_temp = (V[1:imax+1, 1:jmax+1, 0:kmax-1]
             - V[1:imax+1, 1:jmax+1, 1:kmax])/h
 
-    difzne[1:imax+1, 1:jmax+1, 0:kmax-1]=\
+    difzne_temp=\
         (ne[1:imax+1, 1:jmax+1, 1:kmax]\
         -ne[1:imax+1, 1:jmax+1, 0:kmax-1])/h;
-    difzni[1:imax+1, 1:jmax+1, 0:kmax-1]=\
+    difzni_temp=\
         (ni[1:imax+1, 1:jmax+1, 1:kmax]\
         -ni[1:imax+1, 1:jmax+1, 0:kmax-1])/h;
 
-    Ex[1:imax+1, 1:jmax+1, 1:kmax-1] = (V[1:imax+1, 1:jmax+1, 1:kmax-1]-\
+    Ez = slice_add(Ez_temp, Ez, indices, nnn)
+    difzne = slice_add(difzne_temp, difzne, indices, nnn)
+    difzni = slice_add(difzni_temp, difzni, indices, nnn)
+
+    indices = [[1, imax+1], [1,jmax+1], [1,kmax-1]]
+    Ex_temp = (V[1:imax+1, 1:jmax+1, 1:kmax-1]-\
             V[1+1:imax+1+1, 1:jmax+1, 1:kmax-1]) / h
-    Ey[1:imax+1, 1:jmax+1, 1:kmax-1] = (V[1:imax+1, 1:jmax+1, 1:kmax-1]-\
+    Ey_temp = (V[1:imax+1, 1:jmax+1, 1:kmax-1]-\
             V[1:imax+1, 1+1:jmax+1+1, 1:kmax-1]) / h
 
-    difxne[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+    difxne_temp = \
             (ne[2:imax+1+1, 1:jmax+1, 1:kmax-1] - ne[1:imax+1, 1:jmax+1, 1:kmax-1]) / h
-    difxni[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+    difxni_temp = \
             (ni[2:imax+1+1, 1:jmax+1, 1:kmax-1] - ni[1:imax+1, 1:jmax+1, 1:kmax-1]) / h
-    difyne[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+    difyne_temp = \
             (ne[1:imax+1, 2:jmax+1+1, 1:kmax-1] - ne[1:imax+1, 1:jmax+1, 1:kmax-1]) / h
-    difyni[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+    difyni_temp = \
             (ni[1:imax+1, 2:jmax+1+1, 1:kmax-1] - ne[1:imax+1, 1:jmax+1, 1:kmax-1]) / h
 
+    Ex = slice_add(Ex_temp, Ex, indices, nnn)
+    Ey = slice_add(Ex_temp, Ex, indices, nnn)
+    difxne = slice_add(difxne_temp, difxne, indices, nnn)
+    difxni = slice_add(difxni_temp, difxni, indices, nnn)
+    difyne = slice_add(difyne_temp, difyne, indices, nnn)
+    difyni = slice_add(difyni_temp, difyni, indices, nnn)
+
 def average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni):
-    Exy[2:imax+1, 1:jmax, 1:kmax-1] = .25*(Ex[2:imax+1, 1:jmax, 1:kmax-1] +\
+    indices = [[2, imax+1], [1, jmax], [1, kmax-1]]
+    Exy_temp = .25*(Ex[2:imax+1, 1:jmax, 1:kmax-1] +\
             Ex[2:imax+1, 2:jmax+1, 1:kmax-1] + Ex[1:imax, 1:jmax, 1:kmax-1] + \
             Ex[1:imax, 2:jmax+1, 1:kmax-1])
-    difxyne[2:imax+1, 1:jmax, 1:kmax-1] = .25*(difxne[2:imax+1, 1:jmax, 1:kmax-1] +\
+    difxyne_temp = .25*(difxne[2:imax+1, 1:jmax, 1:kmax-1] +\
             difxne[2:imax+1, 2:jmax+1, 1:kmax-1] + difxne[1:imax, 1:jmax, 1:kmax-1]) +\
             difxne[1:imax, 2:jmax+1, 1:kmax-1]
-    difxyni[2:imax+1, 1:jmax, 1:kmax-1] = .25*(difxni[2:imax+1, 1:jmax, 1:kmax-1] +\
+    difxyni_temp = .25*(difxni[2:imax+1, 1:jmax, 1:kmax-1] +\
             difxni[2:imax+1, 2:jmax+1, 1:kmax-1] + difxni[1:imax, 1:jmax, 1:kmax-1]) +\
             difxni[1:imax, 2:jmax+1, 1:kmax-1]
+    Exy = slice_add(Exy_temp, Exy, slices, nnn)
+    difxyne = slice_add(difxyne_temp, difxyne, slices, nnn)
+    difxyni = slice_add(difxyni_temp, difxyni, slices, nnn)
 
     Exy[1, 1:jmax, 1:kmax-1] = .25*(Ex[1, 1:jmax, 1:kmax-1] +\
             Ex[1, 2:jmax+1, 1:kmax-1] \
@@ -187,7 +269,8 @@ def average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni):
 
 
 def flux_x(ne, ni, fex, fix, Ex, Exy, difxne, difxni, difxyne, difxyni):
-    fex[1:imax+1, 1:jmax+1, 1:kmax-1]=\
+    indices = [[1, imax+1], [1, jmax+1], [1, kmax-1]]
+    fex_temp=\
             (-0.5*(ne[1:imax+1, 1:jmax+1, 1:kmax-1]\
             +ne[2:imax+1+1, 1:jmax+1, 1:kmax-1])*mue\
             *Ex[1:imax+1, 1:jmax+1, 1:kmax-1]\
@@ -196,11 +279,17 @@ def flux_x(ne, ni, fex, fix, Ex, Exy, difxne, difxni, difxyne, difxyni):
                     /nue+wce*q*0.5*(ne[1:imax+1, 1:jmax+1, 1:kmax-1]\
                     +ne[2:imax+1+1, 1:jmax+1, 1:kmax-1])/(me*nue*nue)*Exy[1:imax+1, 1:jmax+1, 1:kmax-1])/denominator_e;
 
-    fix[1:imax+1, 1:jmax+1, 1:kmax-1]=(0.5*(ni[1:imax+1, 1:jmax+1, 1:kmax-1]+ni[2:imax+1+1, 1:jmax+1, 1:kmax-1])*mui*Ex[1:imax+1, 1:jmax+1, 1:kmax-1]-difi*difxni[1:imax+1, 1:jmax+1, 1:kmax-1]
+    fix_temp=(0.5*(ni[1:imax+1, 1:jmax+1, 1:kmax-1]+ni[2:imax+1+1, 1:jmax+1, 1:kmax-1])*mui*Ex[1:imax+1, 1:jmax+1, 1:kmax-1]-difi*difxni[1:imax+1, 1:jmax+1, 1:kmax-1]
     -wci*difi*difxyni[1:imax+1, 1:jmax+1, 1:kmax-1]/nui+wci*q*0.5*(ni[1:imax+1, 1:jmax+1, 1:kmax-1]+ni[2:imax+1+1, 1:jmax+1, 1:kmax-1])*Exy[1:imax+1, 1:jmax+1, 1:kmax-1]/(mi*nui*nui))/denominator_i;
 
-    fex[0, 1:jmax+1, 1:kmax-1] = fex[imax, 1:jmax+1, 1:kmax-1];
-    fix[0, 1:jmax+1, 1:kmax-1] = fix[imax, 1:jmax+1, 1:kmax-1];
+    fex = slice_add(fex_temp, fex, indices, nnn)
+    fix = slice_add(fex_temp, fex, indices, nnn)
+
+    indices = [[0, 1], [1, jmax+1], [1, kmax-1]]
+    fex_temp = fex[imax:imax+1, 1:jmax+1, 1:kmax-1];
+    fix_temp = fix[imax:imax+1, 1:jmax+1, 1:kmax-1];
+    fex = slice_add(fex_temp, fex, indices, nnn)
+    fix = slice_add(fex_temp, fex, indices, nnn)
 
 
 def average_y(ne, ni, Ey, Exy, difyne, difyni, difxyne, difxyni):
@@ -248,29 +337,29 @@ def flux_z(ne, ni, Ez, fez, fiz, difzne, difzni):
  
 
 def main():
-    g       = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    R       = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    ne      = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    ni      = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    V       = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    Ex      = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    Ey      = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    Ez      = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    fex     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    fey     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    fez     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    fix     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    fiy     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    fiz     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    difxne  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    difxni  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    difyne  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    difyni  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    difzne  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    difzni  = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    Exy     = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    difxyne = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
-    difxyni = np.zeros((imax+upper_lim, jmax+upper_lim, kmax+upper_lim), dtype='float32')
+    g       = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    R       = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    ne      = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    ni      = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    V       = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    Ex      = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    Ey      = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    Ez      = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    fex     = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    fey     = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    fez     = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    fix     = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    fiy     = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    fiz     = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    difxne  = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    difxni  = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    difyne  = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    difyni  = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    difzne  = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    difzni  = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    Exy     = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    difxyne = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
+    difxyni = tf.zeros([imax+upper_lim, jmax+upper_lim, kmax+upper_lim])
    
     method = 'ndarray'
     pv = poisson_vectorized(imax+upper_lim, jmax+upper_lim, kmax+upper_lim,\
@@ -278,12 +367,9 @@ def main():
             , upper_lim=upper_lim)
 
 
-    density_initialization(ne, ni, 15,15,15);
+    ne, ni = density_initialization(n1, n2, n3, 15,15,15);
 
-    si = np.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
-    printf("si before loop: %f", si);
-    printf("ne[%d, %d, %d] = %e\n", 5, 6, 7, ne[5, 6, 7]);
-    printf("ni[%d, %d, %d] = %e\n", 5, 6, 7, ni[5, 6, 7]);
+    si = tf.reduce_sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
     BC_densities(ne, ni)
     start = Time.time()
     with tf.Session() as sess:
@@ -291,48 +377,54 @@ def main():
             V, g = plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv, sess)
             #printf("V[%d, %d, %d] = %f\n", 5, 6, 7, V[5, 6, 7]);
             electric_field_elements(V, ne, ni, Ez, Ex, Ey, difxne, difxni, difyne, difyni, difzne, difzni)
-            average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni)
-            flux_y(ne, ni, fey, fiy, Ey, Ez, Exy, difyne, difyni, difxyne, difxyni)
-            average_y(ne, ni, Ey, Exy, difyne, difyni, difxyne, difxyni)
-            flux_x(ne, ni, fex, fix, Ex, Exy, difxne, difxni, difxyne, difxyni)
-            flux_z(ne, ni, Ez, fez, fiz, difzne, difzni)
+            #average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni)
+            #flux_y(ne, ni, fey, fiy, Ey, Ez, Exy, difyne, difyni, difxyne, difxyni)
+            #average_y(ne, ni, Ey, Exy, difyne, difyni, difxyne, difxyni)
+            #flux_x(ne, ni, fex, fix, Ex, Exy, difxne, difxni, difxyne, difxyni)
+            #flux_z(ne, ni, Ez, fez, fiz, difzne, difzni)
 
-            ne[1:imax+1, 1:jmax+1, 1:kmax] = \
-                ne[1:imax+1, 1:jmax+1, 1:kmax] -\
-                dt * (\
-                  fex[1:imax+1, 1:jmax+1, 1:kmax  ] \
-                - fex[0:imax  , 1:jmax+1, 1:kmax  ] \
-                + fey[1:imax+1, 1:jmax+1, 1:kmax  ] \
-                - fey[1:imax+1, 0:jmax  , 1:kmax  ] \
-                + fez[1:imax+1, 1:jmax+1, 1:kmax  ] \
-                - fez[1:imax+1, 1:jmax+1, 0:kmax-1])/h
-    #                
-            ni[1:imax+1, 1:jmax+1, 1:kmax] = \
-                ni[1:imax+1, 1:jmax+1, 1:kmax] -\
-                dt * (
-                  fix[1:imax+1, 1:jmax+1, 1:kmax] \
-                - fix[0:imax, 1:jmax+1, 1:kmax] \
-                + fiy[1:imax+1, 1:jmax+1, 1:kmax] \
-                - fiy[1:imax+1, 0:jmax, 1:kmax] \
-                + fiz[1:imax+1, 1:jmax+1, 1:kmax] \
-                - fiz[1:imax+1, 1:jmax+1, 0:kmax-1])/h
+            #ne[1:imax+1, 1:jmax+1, 1:kmax] = \
+            #    ne[1:imax+1, 1:jmax+1, 1:kmax] -\
+            #    dt * (\
+            #      fex[1:imax+1, 1:jmax+1, 1:kmax  ] \
+            #    - fex[0:imax  , 1:jmax+1, 1:kmax  ] \
+            #    + fey[1:imax+1, 1:jmax+1, 1:kmax  ] \
+            #    - fey[1:imax+1, 0:jmax  , 1:kmax  ] \
+            #    + fez[1:imax+1, 1:jmax+1, 1:kmax  ] \
+            #    - fez[1:imax+1, 1:jmax+1, 0:kmax-1])/h
+    #       #         
+            #ni[1:imax+1, 1:jmax+1, 1:kmax] = \
+            #    ni[1:imax+1, 1:jmax+1, 1:kmax] -\
+            #    dt * (
+            #      fix[1:imax+1, 1:jmax+1, 1:kmax] \
+            #    - fix[0:imax, 1:jmax+1, 1:kmax] \
+            #    + fiy[1:imax+1, 1:jmax+1, 1:kmax] \
+            #    - fiy[1:imax+1, 0:jmax, 1:kmax] \
+            #    + fiz[1:imax+1, 1:jmax+1, 1:kmax] \
+            #    - fiz[1:imax+1, 1:jmax+1, 0:kmax-1])/h
 
-            ne[1:imax+1, 1:jmax+1, 0] = -dt * fez[1:imax+1, 1:jmax+1, 0] / h
-            ni[1:imax+1, 1:jmax+1, 0] = -dt * fiz[1:imax+1, 1:jmax+1, 0] / h
+            #ne[1:imax+1, 1:jmax+1, 0] = -dt * fez[1:imax+1, 1:jmax+1, 0] / h
+            #ni[1:imax+1, 1:jmax+1, 0] = -dt * fiz[1:imax+1, 1:jmax+1, 0] / h
 
-            BC_densities(ne, ni)
+            #BC_densities(ne, ni)
 
-            sf = np.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
-            
-            alpha = (si -sf) / sf;
-            ne[1:imax+1, 1:jmax+1, 1:kmax-1] = \
-                    ne[1:imax+1, 1:jmax+1, 1:kmax-1] +\
-                    alpha * ne[1:imax+1, 1:jmax+1, 1:kmax-1]
+            #sf = np.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
+            #
+            #alpha = (si -sf) / sf;
+            #ne[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+            #        ne[1:imax+1, 1:jmax+1, 1:kmax-1] +\
+            #        alpha * ne[1:imax+1, 1:jmax+1, 1:kmax-1]
 
             #printf("%d \n", time);
     time_taken2 = Time.time() - start
     print("Time taken: %f"%(time_taken2))
     print(V[5, 6, 7])
+    with tf.Session() as sess:
+        print("running...")
+        start = Time.time()
+        sess.run(V)
+        time_taken2 = Time.time() - start
+        print("Time taken: ", time_taken2)
     return V, g, pv
 
 if __name__=="__main__":

@@ -101,7 +101,7 @@ def plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv):
     #print("Starting poisson")
     ################################333
     #V1 = pv.poisson_fast_no_loop(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
-    V1 = pv.poisson_fast_no_loop_torch(V.view(-1, 1),  g.view(-1, 1)).view(n1, n2, n3)
+    V1 = pv.poisson_fast_no_loop_torch(V.reshape(-1, 1),  g.reshape(-1, 1)).reshape(n1, n2, n3)
     ################################333
     #V2 = poisson_brute(V*1., g*1., 40, pv.imax, pv.jmax, pv.kmax, pv.h, pv.w)
     #V3 = pv.poisson_brute_main(V*1., g*1.)
@@ -304,7 +304,7 @@ def main(want_cuda=False):
 
     density_initialization(ne, ni, 15,15,15);
 
-    si = torch.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
+    si = gp.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
     #printf("si before loop: %f", si);
     #printf("ne[%d, %d, %d] = %e\n", 5, 6, 7, ne[5, 6, 7]);
     #printf("ni[%d, %d, %d] = %e\n", 5, 6, 7, ni[5, 6, 7]);
@@ -346,7 +346,7 @@ def main(want_cuda=False):
 
         BC_densities(ne, ni)
 
-        sf = torch.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
+        sf = gp.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
         
         alpha = (si -sf) / sf;
         ne[1:imax+1, 1:jmax+1, 1:kmax-1] = \

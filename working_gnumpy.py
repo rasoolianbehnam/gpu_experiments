@@ -5,6 +5,7 @@
 
 
 import numpy as np
+import gnumpy as gp
 import time
 import os.path
 
@@ -178,15 +179,10 @@ class poisson_vectorized:
                     self.A = self.kernels['poisson'].dot(self.A)
                 np.save(A_file_name, self.A)
                 np.save(B_file_name, self.B)
-            print("converting to torch...")
-            self.Atorch = torch.from_numpy(self.A)
-            self.Btorch = torch.from_numpy(self.B)
-            self.kernels['g_torch'] = torch.from_numpy(self.kernels['g'])
-            if torch.cuda.is_available() and want_cuda:
-                print("cuda available in pv")
-                self.Atorch = self.Atorch.cuda()
-                self.Btorch = self.Btorch.cuda()
-                self.kernels['g_torch'] = self.kernels['g_torch'].cuda()
+            print("converting to gnumpy...")
+            self.Atorch =gp.garray(self.A)
+            self.Btorch = gp.garray(self.B)
+            self.kernels['g_torch'] = gp.garray(self.kernels['g'])
 
             print("finished!!")
 
@@ -255,8 +251,8 @@ class poisson_vectorized:
 
     def poisson_fast_no_loop_torch(self, V, g):
         g = g * self.w * self.h2 / 6.
-        g = torch.mm(self.kernels['g_torch'], g)
-        return torch.mm(self.Atorch, V) - torch.mm(self.Btorch, g)
+        g = self.kernels['g_torch'].dot(g)
+        return self.Atorch.dot(V) - self.Btorch.dot(g)
 
     def poisson_fast_no_loop_gpu(self, V, g):
         g = self.w * self.h2 * g / 6.
