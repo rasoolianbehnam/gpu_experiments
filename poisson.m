@@ -2,10 +2,10 @@ function [i_kernel, g_kernel, A] = calc_kernels(n1, n2, n3, w, h, num_iterations
     imax = n1 - 3;
     jmax = n2 - 3;
     kmax = n3 - 3;
-    %i_kernel = zeros(n1*n2*n3, n1*n2*n3, 'float');
-    %g_kernel = zeros(n1*n2*n3, n1*n2*n3, 'float');
-    i_kernel = sparse(n1*n2*n3, n1*n2*n3)
-    g_kernel = sparse(n1*n2*n3, n1*n2*n3)
+    i_kernel = zeros(n1*n2*n3, n1*n2*n3, 'float');
+    g_kernel = zeros(n1*n2*n3, n1*n2*n3, 'float');
+    %i_kernel = sparse(n1*n2*n3, n1*n2*n3)
+    %g_kernel = sparse(n1*n2*n3, n1*n2*n3)
     for I = 1:n1*n2*n3;
         k = mod(I, n3);
         s1 = (I - k) / n3;
@@ -34,6 +34,7 @@ function [i_kernel, g_kernel, A] = calc_kernels(n1, n2, n3, w, h, num_iterations
 
     fprintf('Calculating powers...');
     A = i_kernel;
+    B = eye(n1*n2*n3);
     for i =1:num_iterations-1
         if (mod(i, 10) == 0)
             fprintf('%d\n', i);
