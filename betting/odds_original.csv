@@ -1,0 +1,33 @@
+num,Country,odds,probs
+1,argentina,9,0.109
+2,australia,300,0.014
+3,belgium,11,0.038
+4,brazil,4,0.142
+5,colombia,40,0.025
+6,costa rica,500,0.01
+7,croatia,33,0.018
+8,denmark,100,0.012
+9,egypt,150,0.013
+10,england,18,0.019
+11,france,6.5,0.105
+12,germany,4.5,0.114
+13,iceland,200,0.013
+14,iran,500,0.012
+15,japan,300,0.02
+16,korea,750,0.01
+17,mexico,100,0.017
+18,morocco,500,0.005
+19,nigeria,200,0.013
+20,panama,1000,0.007
+21,peru,200,0.015
+22,poland,50,0.015
+23,portugal,25,0.033
+24,russia,40,0.017
+25,saudi arabia,1000,0.011
+26,senegal,200,0.015
+27,serbia,200,0.016
+28,spain,6,0.093
+29,sweden,150,0.018
+30,switzerland,100,0.014
+31,tunisia,750,0.008
+32,uruguay,33,0.03

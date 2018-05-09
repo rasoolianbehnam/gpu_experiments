@@ -6,7 +6,7 @@
 
 import numpy as np
 import tensorflow as tf
-from scipy.sparse import csr_matrix, lil_matrix, coo_matrix, eye
+#from scipy.sparse import csr_matrix, lil_matrix, coo_matrix, eye
 import time
 import os.path
 
@@ -53,13 +53,13 @@ class poisson_vectorized:
         keys = ['poisson', 'g']
         if self.method == 'lil' or method == 'coo1':
             for key in keys:
-                self.kernels[key] = lil_matrix((n1*n2*n3, n1*n2*n3), dtype='float64')
+                self.kernels[key] = lil_matrix((n1*n2*n3, n1*n2*n3), dtype='float32')
         elif method == 'coo':
             for key in keys:
-                self.kernels[key] = np.zeros((n1*n2*n3, n1*n2*n3), dtype='float64')
+                self.kernels[key] = np.zeros((n1*n2*n3, n1*n2*n3), dtype='float32')
         elif self.method == 'ndarray':
             for key in keys:
-                self.kernels[key] = np.zeros((n1*n2*n3, n1*n2*n3), dtype='float64')
+                self.kernels[key] = np.zeros((n1*n2*n3, n1*n2*n3), dtype='float32')
         print("method used is %s"%(self.method))
         self.w = w
         self.h = h
@@ -118,13 +118,13 @@ class poisson_vectorized:
         if self.method == 'coo':
             print("Starting coo conversion")
             for key in self.kernels:
-                self.kernels[key] = coo_matrix(self.kernels[key], (n1*n2*n3, n1*n2*n3), dtype='float64')
+                self.kernels[key] = coo_matrix(self.kernels[key], (n1*n2*n3, n1*n2*n3), dtype='float32')
         # uncomment in order to make fast1 work
         # fast1 is less efficient that fast due to chain matrix multiplicaiton order
         # rule.
 
         if self.method == 'coo':
-            self.B = lil_matrix(eye(n1*n2*n3, n1*n2*n3), dtype='float64')
+            self.B = lil_matrix(eye(n1*n2*n3, n1*n2*n3), dtype='float32')
         elif self.method == 'ndarray':
             self.B = np.eye(n1*n2*n3, n1*n2*n3)
 
@@ -152,8 +152,8 @@ class poisson_vectorized:
         #        self.B += self.A
         #        self.A = self.kernels['poisson'].dot(self.A)
         #    print('converting large A and B to coo format to store')
-        #    self.B = coo_matrix(self.B, (n1*n2*n3, n1*n2*n3), dtype='float64')
-        #    self.A = coo_matrix(self.B, (n1*n2*n3, n1*n2*n3), dtype='float64')
+        #    self.B = coo_matrix(self.B, (n1*n2*n3, n1*n2*n3), dtype='float32')
+        #    self.A = coo_matrix(self.B, (n1*n2*n3, n1*n2*n3), dtype='float32')
 
         #    print("saving self.B: ")
         #    save_sparse_csr(B_file_name, self.B.tocsr())
@@ -165,11 +165,11 @@ class poisson_vectorized:
             B_file_name = 'self_B_%d_%d_%d_%d_ndarray.npy'%(n1, n2, n3, self.num_iterations)
             if os.path.isfile(A_file_name):
                 print("%s exists"%(A_file_name))
-                self.A = np.load(A_file_name).astype('float64')
+                self.A = np.load(A_file_name).astype('float32')
                 Afound = True
             if os.path.isfile(B_file_name):
                 print("%s exists"%(B_file_name))
-                self.B = np.load(B_file_name).astype('float64')
+                self.B = np.load(B_file_name).astype('float32')
                 Bfound = True
             if (not Afound and not Bfound):
                 self.A = self.kernels['poisson']
@@ -181,18 +181,9 @@ class poisson_vectorized:
                 np.save(A_file_name, self.A)
                 np.save(B_file_name, self.B)
 
-            self.Atf = tf.placeholder(tf.float64, \
-                    shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
-            self.Btf = tf.placeholder(tf.float64, \
-                    shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
-            self.g_kernel = tf.placeholder(tf.float64, \
-                    shape=[self.n1*self.n2*self.n3, self.n1*self.n2*self.n3])
-            self.Vtf = tf.placeholder(tf.float64, \
-                    shape=[self.n1*self.n2*self.n3, 1])
-            self.gtf = tf.placeholder(tf.float64, \
-                    shape=[self.n1*self.n2*self.n3, 1])
-            self.gtmp = tf.matmul(self.g_kernel, self.gtf)
-            self.out = tf.matmul(self.Atf, self.Vtf) - tf.matmul(self.Btf, self.gtmp)
+            self.Atf = tf.constant(self.A)
+            self.Btf = tf.constant(self.A)
+            self.gtfk = tf.constant(self.kernels['g'])
             print("finished!!")
 
 
@@ -260,13 +251,8 @@ class poisson_vectorized:
 
     def poisson_fast_no_loop_tensor(self, V, g, sess):
         g = g * self.w * self.h2 / 6.
-        return sess.run(self.out, \
-                feed_dict={\
-                    self.Vtf:V\
-                    , self.gtf:g\
-                    , self.Atf:self.A\
-                    , self.Btf:self.B\
-                    , self.g_kernel:self.kernels['g']})
+        g = tf.matmul(self.gtfk, g)
+        return tf.matmul(self.Atf, V) - tf.matmul(self.Btf, g)
 
     
     #@jit
@@ -328,7 +314,7 @@ class poisson_vectorized:
         return temp
 
     def poisson_brute3_gpu(self, V, g, sess):
-        out = tf.Variable(tf.float64, V)
+        out = tf.Variable(tf.float32, V)
         #for kk in range(self.num_iterations):
         #    out[1:self.imax-1, 1:self.jmax-1, 1:self.kmax-1].assign(out[1:self.imax-1, 1:self.jmax-1, 1:self.kmax-1] + 1)
         sess.run(out)
@@ -376,8 +362,8 @@ def main():
     w = 1.843
     pv = poisson_vectorized(n1, n2, n3, w=w, num_iterations=40, method='coo'\
                                     , upper_lim=upper_lim)
-    V1 = (np.random.rand(n1 * n2 * n3) * 30  + 1).astype('float64')
-    g = (np.random.rand(n1 * n2 * n3) * 2e5  + -1e5).astype('float64')
+    V1 = (np.random.rand(n1 * n2 * n3) * 30  + 1).astype('float32')
+    g = (np.random.rand(n1 * n2 * n3) * 2e5  + -1e5).astype('float32')
 
     for I in range(0, n1*n2*n3):
         k = I % n3
