@@ -1,5 +1,5 @@
 import numpy as np
-from working_gpu import *
+from working_tensor import *
 import time as Time
 
 def printf(text, *args):
@@ -90,22 +90,26 @@ def poisson_brute(V, g, num_iterations, imax, jmax, kmax, h=h, w=w):
                     V[i, j, k] += r
     return V
 
-def plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv):
+def plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv, sess):
     w = pv.w
     h = pv.h
     num_iterations = pv.num_iterations
    # Here we calculate the right hand side of the Poisson equation
     g[1:imax+1, 1:jmax+1, 1:kmax-1]=-(ne[1:imax+1, 1:jmax+1, 1:kmax-1]*qe\
             +ni[1:imax+1, 1:jmax+1, 1:kmax-1]*qi)/eps0;
-    print("Starting poisson")
+    #print("Starting poisson")
+    #start = Time.time()
     ################################333
-    V1 = pv.poisson_fast_no_loop(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
+    #V1 = pv.poisson_fast_no_loop(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
+    V1 = pv.poisson_fast_no_loop_tensor(V.reshape(-1, 1), g.reshape(-1, 1), sess).reshape(n1, n2, n3)
     ################################333
     #V2 = poisson_brute(V*1., g*1., 40, pv.imax, pv.jmax, pv.kmax, pv.h, pv.w)
     #V3 = pv.poisson_brute_main(V*1., g*1.)
     #V[:, :, :] = pv.poisson_brute_main_flat(V.reshape(-1),  g.reshape(-1)).reshape(n1, n2, n3)
     #stat_diff(V1, V2, "fast no loop vs brute here")
     #stat_diff(V2, V3, "brute pv loop vs brute here")
+    #time_taken2 = Time.time() - start
+    #print("Time taken: %f"%(time_taken2))
     V = V1
 
 
@@ -281,53 +285,54 @@ def main():
     printf("ne[%d, %d, %d] = %e\n", 5, 6, 7, ne[5, 6, 7]);
     printf("ni[%d, %d, %d] = %e\n", 5, 6, 7, ni[5, 6, 7]);
     BC_densities(ne, ni)
-    
     start = Time.time()
-    for time in range(1, tmax):
-        V, g = plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv)
-        printf("V[%d, %d, %d] = %f\n", 5, 6, 7, V[5, 6, 7]);
-        electric_field_elements(V, ne, ni, Ez, Ex, Ey, difxne, difxni, difyne, difyni, difzne, difzni)
-        average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni)
-        flux_y(ne, ni, fey, fiy, Ey, Ez, Exy, difyne, difyni, difxyne, difxyni)
-        average_y(ne, ni, Ey, Exy, difyne, difyni, difxyne, difxyni)
-        flux_x(ne, ni, fex, fix, Ex, Exy, difxne, difxni, difxyne, difxyni)
-        flux_z(ne, ni, Ez, fez, fiz, difzne, difzni)
+    with tf.Session() as sess:
+        for time in range(1, tmax):
+            V, g = plasma_sim_solve_poisson_equation_on_grid(V, g, ne, ni, pv, sess)
+            #printf("V[%d, %d, %d] = %f\n", 5, 6, 7, V[5, 6, 7]);
+            electric_field_elements(V, ne, ni, Ez, Ex, Ey, difxne, difxni, difyne, difyni, difzne, difzni)
+            average_x(ne, ni, Ex, Exy, difxne, difxni, difxyne, difxyni)
+            flux_y(ne, ni, fey, fiy, Ey, Ez, Exy, difyne, difyni, difxyne, difxyni)
+            average_y(ne, ni, Ey, Exy, difyne, difyni, difxyne, difxyni)
+            flux_x(ne, ni, fex, fix, Ex, Exy, difxne, difxni, difxyne, difxyni)
+            flux_z(ne, ni, Ez, fez, fiz, difzne, difzni)
 
-        ne[1:imax+1, 1:jmax+1, 1:kmax] = \
-            ne[1:imax+1, 1:jmax+1, 1:kmax] -\
-            dt * (\
-              fex[1:imax+1, 1:jmax+1, 1:kmax  ] \
-            - fex[0:imax  , 1:jmax+1, 1:kmax  ] \
-            + fey[1:imax+1, 1:jmax+1, 1:kmax  ] \
-            - fey[1:imax+1, 0:jmax  , 1:kmax  ] \
-            + fez[1:imax+1, 1:jmax+1, 1:kmax  ] \
-            - fez[1:imax+1, 1:jmax+1, 0:kmax-1])/h
-#                
-        ni[1:imax+1, 1:jmax+1, 1:kmax] = \
-            ni[1:imax+1, 1:jmax+1, 1:kmax] -\
-            dt * (
-              fix[1:imax+1, 1:jmax+1, 1:kmax] \
-            - fix[0:imax, 1:jmax+1, 1:kmax] \
-            + fiy[1:imax+1, 1:jmax+1, 1:kmax] \
-            - fiy[1:imax+1, 0:jmax, 1:kmax] \
-            + fiz[1:imax+1, 1:jmax+1, 1:kmax] \
-            - fiz[1:imax+1, 1:jmax+1, 0:kmax-1])/h
+            ne[1:imax+1, 1:jmax+1, 1:kmax] = \
+                ne[1:imax+1, 1:jmax+1, 1:kmax] -\
+                dt * (\
+                  fex[1:imax+1, 1:jmax+1, 1:kmax  ] \
+                - fex[0:imax  , 1:jmax+1, 1:kmax  ] \
+                + fey[1:imax+1, 1:jmax+1, 1:kmax  ] \
+                - fey[1:imax+1, 0:jmax  , 1:kmax  ] \
+                + fez[1:imax+1, 1:jmax+1, 1:kmax  ] \
+                - fez[1:imax+1, 1:jmax+1, 0:kmax-1])/h
+    #                
+            ni[1:imax+1, 1:jmax+1, 1:kmax] = \
+                ni[1:imax+1, 1:jmax+1, 1:kmax] -\
+                dt * (
+                  fix[1:imax+1, 1:jmax+1, 1:kmax] \
+                - fix[0:imax, 1:jmax+1, 1:kmax] \
+                + fiy[1:imax+1, 1:jmax+1, 1:kmax] \
+                - fiy[1:imax+1, 0:jmax, 1:kmax] \
+                + fiz[1:imax+1, 1:jmax+1, 1:kmax] \
+                - fiz[1:imax+1, 1:jmax+1, 0:kmax-1])/h
 
-        ne[1:imax+1, 1:jmax+1, 0] = -dt * fez[1:imax+1, 1:jmax+1, 0] / h
-        ni[1:imax+1, 1:jmax+1, 0] = -dt * fiz[1:imax+1, 1:jmax+1, 0] / h
+            ne[1:imax+1, 1:jmax+1, 0] = -dt * fez[1:imax+1, 1:jmax+1, 0] / h
+            ni[1:imax+1, 1:jmax+1, 0] = -dt * fiz[1:imax+1, 1:jmax+1, 0] / h
 
-        BC_densities(ne, ni)
+            BC_densities(ne, ni)
 
-        sf = np.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
-        
-        alpha = (si -sf) / sf;
-        ne[1:imax+1, 1:jmax+1, 1:kmax-1] = \
-                ne[1:imax+1, 1:jmax+1, 1:kmax-1] +\
-                alpha * ne[1:imax+1, 1:jmax+1, 1:kmax-1]
+            sf = np.sum(ne[1:imax+1, 1:jmax+1, 1:kmax+1])
+            
+            alpha = (si -sf) / sf;
+            ne[1:imax+1, 1:jmax+1, 1:kmax-1] = \
+                    ne[1:imax+1, 1:jmax+1, 1:kmax-1] +\
+                    alpha * ne[1:imax+1, 1:jmax+1, 1:kmax-1]
 
-        printf("%d \n", time);
+            #printf("%d \n", time);
     time_taken2 = Time.time() - start
     print("Time taken: %f"%(time_taken2))
+    print(V[5, 6, 7])
     return V, g, pv
 
 if __name__=="__main__":

@@ -5,7 +5,6 @@
 
 
 import numpy as np
-import tensorflow as tf
 from scipy.sparse import csr_matrix, lil_matrix, coo_matrix, eye
 import time
 import os.path
