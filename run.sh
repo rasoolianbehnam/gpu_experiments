@@ -8,7 +8,7 @@ fileName=$(echo $1 | cut -d'.' -f1)
 echo file name: $fileName
 if [[ $1 = *.cu ]]; 
 then 
-    clang $1 -o ${fileName}_cu && ./${fileName}_cu;
+    nvcc $1 -o ${fileName}_cu && ./${fileName}_cu;
 elif [[ $1 = *.py ]]; 
 then
     python $1;
