@@ -1,6 +1,6 @@
 *.out
 *.o
-./*.txt
+*.txt
 *.npz
 *.npy
 *.swo

@@ -1,3 +1,2 @@
-[NVBLAS] Problem parsing line 10
+[NVBLAS] Using devices :0 1 2 3 
 [NVBLAS] Config parsed
-[NVBLAS] No device selected
