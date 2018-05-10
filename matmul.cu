@@ -5,15 +5,69 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+#include "opencv2/imgproc/imgproc.hpp"
+#include "opencv2/highgui/highgui.hpp"
+using namespace cv;
 
+typedef struct {
+    float *array;
+    size_t used;
+    size_t size;
+} Array;
 
-float vec_dot_vec(float *v1, float *v2, int n) {
-    float res=0.0;
-    for (int i=0; i < n; i+=4) {
-        res += v1[i] * v2[i];
+float rel_error(int n, float *a, float *b) {
+    float max_diff = -100000;
+    float tmp, tmp1, tmp2, sum;
+    for (int i=0; i < n; i++) {
+        tmp = a[i] - b[i];
+        if (tmp < 0) tmp = -tmp;
+
+        tmp1 = a[i];
+        tmp2 = b[i];
+        if (tmp1 < 0) tmp1 = -tmp1;
+        if (tmp2 < 0) tmp2 = -tmp2;
+        sum = tmp1 + tmp1;
+        if (sum < 1e-8) sum=1e-8;
+        if (tmp / sum > max_diff) max_diff=tmp/sum;
     }
-    return res;
+    return max_diff;
 }
+void initArray(Array *a, size_t initialSize) {
+    //a->array = (float *)malloc(initialSize * sizeof(float));
+    cudaMallocManaged(&(a->array), initialSize * sizeof(float));
+    a->used = 0;
+    a->size = initialSize;
+}
+
+void insertArray(Array *a, float element) {
+    // a->used is the number of used entries, 
+    //because a->array[a->used++] updates a->used 
+    //only *after* the array has been accessed.
+    // Therefore a->used can go up to a->size 
+    if (a->used == a->size) {
+        printf("reallocating\n");
+        a->size *= 2;
+        a->array = (float *)realloc(a->array, a->size * sizeof(float));
+    }
+    a->array[a->used++] = element;
+}
+void freeArray(Array *a) {
+    free(a->array);
+    a->array = NULL;
+    a->used = a->size = 0;
+}
+
+void square_matrix_to_sparse(int N, float **mat, Array **indices, Array **values) {
+    for (int i=0; i<N;i++){
+        for(int j=0;j<N;j++) {
+            if (mat[i][j]) {
+                insertArray(indices[i], (float) j);
+                insertArray(values[i], mat[i][j]);
+            }
+        }
+    }
+}
+
 
 void mat_dot_vec(int N, float **I_kernel, float *V, float *R) {
     for (int i=0; i < N; i++) {
@@ -24,7 +78,35 @@ void mat_dot_vec(int N, float **I_kernel, float *V, float *R) {
     }
 }
 
+void array_dot_vec(int N, Array **indices, Array **values, float *V, float *R) {
+    for (int i=0; i < N; i++) {
+        R[i] = 0;
+        for (int j=0; j < indices[i]->used; j++) {
+            R[i] += values[i]->array[j] * V[(int)indices[i]->array[j]];
+        }
+    }
+}
 
+void array_dot_vec2(int N, float **indices, float **values, int *sizes, float *V, float *R) {
+    for (int i=0; i < N; i+=1) {
+        R[i] = 0;
+        for (int j=0; j < sizes[i]; j+=1) {
+            R[i] += values[i][j] * V[(int)indices[i][j]];
+        }
+    }
+}
+__global__  void array_dot_vec_cu(int N, float **indices, float **values, int *sizes, float *V, float *R) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    int index_y = threadIdx.y + blockDim.y * blockIdx.y;
+    int stride_y = blockDim.y * gridDim.y;
+    for (int i=index_x; i < N; i+=stride_x) {
+        R[i] = 0;
+        for (int j=index_y; j < sizes[i]; j+=stride_y) {
+            R[i] += values[i][j] * V[(int)indices[i][j]];
+        }
+    }
+}
 __global__ void mat_dot_vec_cu(int N, float **I_kernel, float *V, float *R) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
     int stride_x = blockDim.x * gridDim.x;
@@ -36,7 +118,9 @@ __global__ void mat_dot_vec_cu(int N, float **I_kernel, float *V, float *R) {
     }
 }
 
-void mat_dot_vec2(int N, float *I_kernel, float *V, float *R) {
+
+
+void mat_dot_vec_linear(int N, float *I_kernel, float *V, float *R) {
     int i, j;
     for (int I=0; I < N*N; I++) {
         j = I % N; 
@@ -45,7 +129,7 @@ void mat_dot_vec2(int N, float *I_kernel, float *V, float *R) {
     }
 }
 
-__global__ void mat_dot_vec_cu2(int N, float *I_kernel, float *V, float *R) {
+__global__ void mat_dot_vec_cu_linear(int N, float *I_kernel, float *V, float *R) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
     int stride_x = blockDim.x * gridDim.x;
     int i, j;
@@ -56,88 +140,142 @@ __global__ void mat_dot_vec_cu2(int N, float *I_kernel, float *V, float *R) {
     }
 }
 
-
-
-int main() {
-    int N = 19 * 19 * 19;
-    printf("N = %d\n", N);
-    float *a;
-    float *a_cu;
-    float *R;
-    float *R_cu;
-    float **b;
-    float *b2;
-    float **b_cu;
-    float *b_cu2;
-    a = (float *) malloc(N * sizeof(a));
-    cudaMallocManaged(&a_cu, N * sizeof(a_cu));
-    R = (float *) malloc(N * sizeof(R));
-    cudaMallocManaged(&R_cu, N * sizeof(R_cu));
-    b = (float **) malloc(N * sizeof(b));
-    b2 = (float *) malloc(N * N * sizeof(b2));
-    cudaMallocManaged(&b_cu, N * sizeof(b_cu));
-    cudaMallocManaged(&b_cu2, N * N * sizeof(b_cu));
-    for (int i=0; i < N; i++){
-        b[i] = (float *) malloc(N * sizeof(b[i]));
-        cudaMallocManaged(&b_cu[i], N * sizeof(b_cu[i]));
-    }
-    for (int I=0; I < N*N; I++) b_cu2[I] = 1;
+float vec_dot_vec(int N, float *I_kernel, float *V) {
+    float out = 0;
     for (int i=0; i < N; i++) {
-        a[i] = 1;
-        a_cu[i] = 1;
-        R[i] = 0;
-        R_cu[i] = 0;
+        out += I_kernel[i]*V[i];
     }
-    for (int i=0; i < N; i++)
+}
+void mat_dot_mat(int N, float **I_kernel, float **V, float **R) {
+    for (int i=0; i < N; i++) {
         for (int j=0; j < N; j++) {
-            b[i][j] = 0;
-            b_cu[i][j] = 0;
-            b2[j + N * i] = 0;
-            b_cu2[j + N * i] = 0;
-            if (i == j) {
-                b[i][j] = 1;
-                b_cu[i][j] = 1;
-                b2[j + N * i] = 1;
-                b_cu2[j + N * i] = 1;
+            R[i][j] = 0;
+            for (int k=0; k < N; k++) {
+                R[i][j] += I_kernel[i][k] * V[k][j];
             }
         }
-
-    float begin, time_spend;
-
-    begin = clock();
-    mat_dot_vec_cu<<<N, N/32>>>(N, b_cu, a_cu, R_cu); cudaDeviceSynchronize();
-    time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
-    printf("Time spent with parallelization: %f\n", time_spend);
-
-    //begin = clock();
-    //mat_dot_vec_cu2<<<1, 10>>>(N, b_cu2, a_cu, R_cu); cudaDeviceSynchronize();
-    //time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
-    //printf("Time spent with parallelization: %f\n", time_spend);
-
-    //begin = clock();
-    //dim3 dimBlock(1, 1);
-    //dim3 dimGrid(N, N);
-    //mat_dot_vec_cu2<<<dimGrid, dimBlock>>>(N, b_cu, a_cu, R_cu); cudaDeviceSynchronize();
-    //time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
-    //printf("Time spent without parallelization: %f\n", time_spend);
-
-    //begin = clock();
-    //mat_dot_vec(N, b, a, R);
-    //time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
-    //printf("Time spent without parallelization: %f\n", time_spend);
-
-    begin = clock();
-    mat_dot_vec2(N, b2, a, R);
-    time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
-    printf("Time spent without parallelization: %f\n", time_spend);
-
-    float sum = 0;
-    for (int i=0; i < N; i++){
-        float tmp = R[i] - R_cu[i];
-        if (tmp > 0) sum += tmp;
-        else sum -= tmp;
     }
-    printf("difference: %f\n", sum);
-    printf("done");
-    //for (int i=0; i < N; i++) printf("%f\n", R[i]);
+}
+
+int main() {
+    int imax = 32;
+    int jmax = 16;
+    int kmax = 16;
+    int n1 = imax+3;
+    int n2 = jmax+3;
+    int n3 = kmax+3;
+    int N = n1*n2*n3;
+    float w = 1.68;
+    printf("N = %d\n", N);
+    //Array **indices;
+    //Array **values;
+
+    //float **my_mat;
+    //cudaMallocManaged(&my_mat, N*sizeof(my_mat));
+    //for (int i=0; i<N; i++) {
+    //    cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
+    //    my_mat[i][i] = 3;
+    //}
+    //for (int i=0; i<N; i++) {
+    //    int num_values = rand() % (N / 10);
+    //    for (int j=0; j < num_values; j++) {
+    //        my_mat[i][rand()%N] = 1;
+    //    }
+    //}
+
+    //float *my_vector;
+    //cudaMallocManaged(&my_vector, N * sizeof(float));
+    //for (int i=0; i < N; i++) {
+    //    my_vector[i] = 1;
+    //}
+
+    //indices = (Array **) malloc(N * sizeof(indices));
+    //values  = (Array **) malloc(N * sizeof(values));
+    //for (int i=0; i < N; i++) {
+    //    indices[i] = (Array *) malloc(sizeof(indices[i]));
+    //    values[i] = (Array *) malloc(sizeof(values[i]));
+    //    initArray(indices[i], N/10+5);
+    //    initArray(values[i], N/10+5);
+    //}
+    ////Converting normal matrix to sparse
+    ////the result would be three arrays
+    //// indices, values and sizes
+    //square_matrix_to_sparse(N, my_mat, indices, values);
+    //float **indices_mardas;
+    //float **values_mardas;
+    //int *size_mardas;
+    //cudaMallocManaged(&indices_mardas, N*sizeof(indices_mardas));
+    //cudaMallocManaged(&values_mardas, N*sizeof(values_mardas));
+    //cudaMallocManaged(&size_mardas, N*sizeof(size_mardas));
+    //for (int i=0; i<N; i++) {
+    //    size_mardas[i] = indices[i]->used;
+    //    cudaMallocManaged(&indices_mardas[i], size_mardas[i]*sizeof(indices_mardas[i]));
+    //    cudaMallocManaged(&values_mardas[i], size_mardas[i]*sizeof(values_mardas[i]));
+    //    for (int j=0; j<size_mardas[i]; j++) {
+    //        indices_mardas[i][j] = indices[i]->array[j];
+    //        values_mardas[i][j] = values[i]->array[j];
+    //    }
+    //}
+
+    //dim3 dimBlock(32, 1); 
+    //dim3 dimGrid(N/32, 1); 
+
+    //float begin, time_spend;
+
+    //float *result1;
+    //float *result2;
+    //float *result3;
+    //cudaMallocManaged(&result1, N*sizeof(result1));
+    //cudaMallocManaged(&result2, N*sizeof(result2));
+    //cudaMallocManaged(&result3, N*sizeof(result3));
+
+    //begin = clock();
+    //mat_dot_vec(N, my_mat, my_vector, result1);
+    //time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
+    //printf("Time spent with NORMAL NO parallelization: %f\n", time_spend);
+
+    //begin = clock();
+    //array_dot_vec2(N, indices_mardas, values_mardas, size_mardas, my_vector, result2);
+    //time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
+    //printf("Time spent with spase NO parallelization: %f\n", time_spend);
+
+    //begin = clock();
+    //array_dot_vec_cu<<<N, 1>>>(N, indices_mardas, values_mardas, size_mardas, my_vector, result3); cudaDeviceSynchronize();
+    //time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
+    //printf("Time spent with spase WITH parallelization: %f\n", time_spend);
+    //printf("%f\n", rel_error(N, result1, result2));
+    //printf("%f\n", rel_error(N, result1, result3));
+
+    //printf("done");
+
+    float **I_kernel = (float **) malloc(N*sizeof *I_kernel);
+    for (int i=0; i<N; i++)
+        I_kernel[i] = (float *) malloc(N*sizeof *I_kernel[i]);
+
+    for (int I=0; I<N; I++) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+        if (i >= 1 && j >= 1 && k >= 1 && i < imax+1 &&
+        j < jmax+1 && k < kmax+1) {
+            for (int j=0; j<N; j++)  {
+                I_kernel[I][j] = w / 6. *
+                (I_kernel[I-n2*n3][j] +
+                I_kernel[I-n2][j] +
+                I_kernel[I-1][j]);
+            }
+        }
+        else
+            for (int j=0; j<0; j++)
+                I_kernel[I][j] = 0;
+
+        I_kernel[I][I+1] += w / 6.;
+        I_kernel[I][I+n3] += w / 6.;
+        I_kernel[I][I+n2*n3] += w / 6.;
+        I_kernel[I][I] += 1 - w;
+    }
+    float **A = (float **) malloc(N * sizeof(float**));
+    for (int i=0; i < N; i++) A[i] = (float*)malloc(N*sizeof(A[i]));
+    mat_dot_mat(N, I_kernel, I_kernel, A);
 }

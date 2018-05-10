@@ -12,12 +12,14 @@ then
 elif [[ $1 = *.py ]]; 
 then
     python $1;
-elif [[ $1 = *.c* ]]; 
+elif [[ $1 = *.c ]]; 
 then
     echo gcc -c $1 -o tmp.o | bash -x && echo gcc -static tmp.o -lm -o ${fileName}.out | bash -x && echo ./${fileName}.out | bash -x
     #echo gcc $1 -o ${fileName}_cpp | bash -x && echo ./${fileName}_cpp | bash -x
 elif [[ $1 = *.m ]]; 
 then
     octave $1;
- 
+elif [[ $1 = *.cpp ]];
+then
+     ~/.local/cmake-3.10.0/bin/cmake ./ && make && ./DisplayImage
 fi
