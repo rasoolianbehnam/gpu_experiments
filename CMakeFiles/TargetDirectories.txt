@@ -1,0 +1,3 @@
+/home/bzr0014/git/gpu_experiments/CMakeFiles/rebuild_cache.dir
+/home/bzr0014/git/gpu_experiments/CMakeFiles/edit_cache.dir
+/home/bzr0014/git/gpu_experiments/CMakeFiles/DisplayImage.dir
