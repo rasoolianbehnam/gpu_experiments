@@ -98,11 +98,9 @@ void array_dot_vec2(int N, float **indices, float **values, int *sizes, float *V
 __global__  void array_dot_vec_cu(int N, float **indices, float **values, int *sizes, float *V, float *R) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
     int stride_x = blockDim.x * gridDim.x;
-    int index_y = threadIdx.y + blockDim.y * blockIdx.y;
-    int stride_y = blockDim.y * gridDim.y;
     for (int i=index_x; i < N; i+=stride_x) {
         R[i] = 0;
-        for (int j=index_y; j < sizes[i]; j+=stride_y) {
+        for (int j=0; j < sizes[i]; j++) {
             R[i] += values[i][j] * V[(int)indices[i][j]];
         }
     }
@@ -157,101 +155,24 @@ void mat_dot_mat(int N, float **I_kernel, float **V, float **R) {
     }
 }
 
-int main() {
+int mardas() {
     int imax = 32;
-    int jmax = 16;
-    int kmax = 16;
+    int jmax = 32;
+    int kmax = 32;
     int n1 = imax+3;
     int n2 = jmax+3;
     int n3 = kmax+3;
     int N = n1*n2*n3;
     float w = 1.68;
     printf("N = %d\n", N);
-    //Array **indices;
-    //Array **values;
+    Array **indices;
+    Array **values;
 
-    //float **my_mat;
-    //cudaMallocManaged(&my_mat, N*sizeof(my_mat));
-    //for (int i=0; i<N; i++) {
-    //    cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
-    //    my_mat[i][i] = 3;
-    //}
-    //for (int i=0; i<N; i++) {
-    //    int num_values = rand() % (N / 10);
-    //    for (int j=0; j < num_values; j++) {
-    //        my_mat[i][rand()%N] = 1;
-    //    }
-    //}
-
-    //float *my_vector;
-    //cudaMallocManaged(&my_vector, N * sizeof(float));
-    //for (int i=0; i < N; i++) {
-    //    my_vector[i] = 1;
-    //}
-
-    //indices = (Array **) malloc(N * sizeof(indices));
-    //values  = (Array **) malloc(N * sizeof(values));
-    //for (int i=0; i < N; i++) {
-    //    indices[i] = (Array *) malloc(sizeof(indices[i]));
-    //    values[i] = (Array *) malloc(sizeof(values[i]));
-    //    initArray(indices[i], N/10+5);
-    //    initArray(values[i], N/10+5);
-    //}
-    ////Converting normal matrix to sparse
-    ////the result would be three arrays
-    //// indices, values and sizes
-    //square_matrix_to_sparse(N, my_mat, indices, values);
-    //float **indices_mardas;
-    //float **values_mardas;
-    //int *size_mardas;
-    //cudaMallocManaged(&indices_mardas, N*sizeof(indices_mardas));
-    //cudaMallocManaged(&values_mardas, N*sizeof(values_mardas));
-    //cudaMallocManaged(&size_mardas, N*sizeof(size_mardas));
-    //for (int i=0; i<N; i++) {
-    //    size_mardas[i] = indices[i]->used;
-    //    cudaMallocManaged(&indices_mardas[i], size_mardas[i]*sizeof(indices_mardas[i]));
-    //    cudaMallocManaged(&values_mardas[i], size_mardas[i]*sizeof(values_mardas[i]));
-    //    for (int j=0; j<size_mardas[i]; j++) {
-    //        indices_mardas[i][j] = indices[i]->array[j];
-    //        values_mardas[i][j] = values[i]->array[j];
-    //    }
-    //}
-
-    //dim3 dimBlock(32, 1); 
-    //dim3 dimGrid(N/32, 1); 
-
-    //float begin, time_spend;
-
-    //float *result1;
-    //float *result2;
-    //float *result3;
-    //cudaMallocManaged(&result1, N*sizeof(result1));
-    //cudaMallocManaged(&result2, N*sizeof(result2));
-    //cudaMallocManaged(&result3, N*sizeof(result3));
-
-    //begin = clock();
-    //mat_dot_vec(N, my_mat, my_vector, result1);
-    //time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
-    //printf("Time spent with NORMAL NO parallelization: %f\n", time_spend);
-
-    //begin = clock();
-    //array_dot_vec2(N, indices_mardas, values_mardas, size_mardas, my_vector, result2);
-    //time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
-    //printf("Time spent with spase NO parallelization: %f\n", time_spend);
-
-    //begin = clock();
-    //array_dot_vec_cu<<<N, 1>>>(N, indices_mardas, values_mardas, size_mardas, my_vector, result3); cudaDeviceSynchronize();
-    //time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
-    //printf("Time spent with spase WITH parallelization: %f\n", time_spend);
-    //printf("%f\n", rel_error(N, result1, result2));
-    //printf("%f\n", rel_error(N, result1, result3));
-
-    //printf("done");
-
-    float **I_kernel = (float **) malloc(N*sizeof *I_kernel);
-    for (int i=0; i<N; i++)
-        I_kernel[i] = (float *) malloc(N*sizeof *I_kernel[i]);
-
+    float **my_mat;
+    cudaMallocManaged(&my_mat, N*sizeof(my_mat));
+    for (int i=0; i<N; i++) {
+        cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
+    }
     for (int I=0; I<N; I++) {
         int k = I % n3;
         int s1 = (I - k) / n3;
@@ -260,22 +181,125 @@ int main() {
         if (i >= 1 && j >= 1 && k >= 1 && i < imax+1 &&
         j < jmax+1 && k < kmax+1) {
             for (int j=0; j<N; j++)  {
-                I_kernel[I][j] = w / 6. *
-                (I_kernel[I-n2*n3][j] +
-                I_kernel[I-n2][j] +
-                I_kernel[I-1][j]);
+                my_mat[I][j] = w / 6. *
+                (my_mat[I-n2*n3][j] +
+                my_mat[I-n2][j] +
+                my_mat[I-1][j]);
             }
         }
         else
             for (int j=0; j<0; j++)
-                I_kernel[I][j] = 0;
+                my_mat[I][j] = 0;
 
-        I_kernel[I][I+1] += w / 6.;
-        I_kernel[I][I+n3] += w / 6.;
-        I_kernel[I][I+n2*n3] += w / 6.;
-        I_kernel[I][I] += 1 - w;
+        my_mat[I][I+1] += w / 6.;
+        my_mat[I][I+n3] += w / 6.;
+        my_mat[I][I+n2*n3] += w / 6.;
+        my_mat[I][I] += 1 - w;
     }
-    float **A = (float **) malloc(N * sizeof(float**));
-    for (int i=0; i < N; i++) A[i] = (float*)malloc(N*sizeof(A[i]));
-    mat_dot_mat(N, I_kernel, I_kernel, A);
+
+//    for (int i=0; i<N; i++) {
+//        int num_values = rand() % (N / 10);
+//        for (int j=0; j < num_values; j++) {
+//            my_mat[i][rand()%N] = 1;
+//        }
+//    }
+
+    float *my_vector;
+    cudaMallocManaged(&my_vector, N * sizeof(float));
+    for (int i=0; i < N; i++) {
+        my_vector[i] = 1;
+    }
+
+    indices = (Array **) malloc(N * sizeof(indices));
+    values  = (Array **) malloc(N * sizeof(values));
+    for (int i=0; i < N; i++) {
+        indices[i] = (Array *) malloc(sizeof(indices[i]));
+        values[i] = (Array *) malloc(sizeof(values[i]));
+        initArray(indices[i], N);
+        initArray(values[i], N);
+    }
+    //Converting normal matrix to sparse
+    //the result would be three arrays
+    // indices, values and sizes
+    square_matrix_to_sparse(N, my_mat, indices, values);
+    float **indices_mardas;
+    float **values_mardas;
+    int *size_mardas;
+    cudaMallocManaged(&indices_mardas, N*sizeof(indices_mardas));
+    cudaMallocManaged(&values_mardas, N*sizeof(values_mardas));
+    cudaMallocManaged(&size_mardas, N*sizeof(size_mardas));
+    for (int i=0; i<N; i++) {
+        size_mardas[i] = indices[i]->used;
+        cudaMallocManaged(&indices_mardas[i], size_mardas[i]*sizeof(indices_mardas[i]));
+        cudaMallocManaged(&values_mardas[i], size_mardas[i]*sizeof(values_mardas[i]));
+        for (int j=0; j<size_mardas[i]; j++) {
+            indices_mardas[i][j] = indices[i]->array[j];
+            values_mardas[i][j] = values[i]->array[j];
+        }
+    }
+
+    dim3 dimBlock(32, 1); 
+    dim3 dimGrid(N/32, 1); 
+
+    float begin, time_spend;
+
+    float *result1;
+    float *result2;
+    float *result3;
+    cudaMallocManaged(&result1, N*sizeof(result1));
+    cudaMallocManaged(&result2, N*sizeof(result2));
+    cudaMallocManaged(&result3, N*sizeof(result3));
+
+    begin = clock();
+    mat_dot_vec(N, my_mat, my_vector, result1);
+    time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
+    printf("Time spent with NORMAL NO parallelization: %f\n", time_spend);
+
+    begin = clock();
+    array_dot_vec2(N, indices_mardas, values_mardas, size_mardas, my_vector, result2);
+    time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
+    printf("Time spent with spase NO parallelization: %f\n", time_spend);
+
+    begin = clock();
+    array_dot_vec_cu<<<N, 1>>>(N, indices_mardas, values_mardas, size_mardas, my_vector, result3); cudaDeviceSynchronize();
+    time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
+    printf("Time spent with spase WITH parallelization: %f\n", time_spend);
+    printf("%f\n", rel_error(N, result1, result2));
+    printf("%f\n", rel_error(N, result1, result3));
+
+    printf("done");
+
+    //float **I_kernel = (float **) malloc(N*sizeof *I_kernel);
+    //for (int i=0; i<N; i++)
+    //    I_kernel[i] = (float *) malloc(N*sizeof *I_kernel[i]);
+
+    //for (int I=0; I<N; I++) {
+    //    int k = I % n3;
+    //    int s1 = (I - k) / n3;
+    //    int j = s1 % n2;
+    //    int i = (s1 - j) / n2;
+    //    if (i >= 1 && j >= 1 && k >= 1 && i < imax+1 &&
+    //    j < jmax+1 && k < kmax+1) {
+    //        for (int j=0; j<N; j++)  {
+    //            I_kernel[I][j] = w / 6. *
+    //            (I_kernel[I-n2*n3][j] +
+    //            I_kernel[I-n2][j] +
+    //            I_kernel[I-1][j]);
+    //        }
+    //    }
+    //    else
+    //        for (int j=0; j<0; j++)
+    //            I_kernel[I][j] = 0;
+
+    //    I_kernel[I][I+1] += w / 6.;
+    //    I_kernel[I][I+n3] += w / 6.;
+    //    I_kernel[I][I+n2*n3] += w / 6.;
+    //    I_kernel[I][I] += 1 - w;
+    //}
+    //float **A = (float **) malloc(N * sizeof(float**));
+    //for (int i=0; i < N; i++) A[i] = (float*)malloc(N*sizeof(A[i]));
+    //mat_dot_mat(N, I_kernel, I_kernel, A);
+}
+int main() {
+    mardas();
 }
