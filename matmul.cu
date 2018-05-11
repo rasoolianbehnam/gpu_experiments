@@ -5,9 +5,12 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include "opencv2/imgproc/imgproc.hpp"
-#include "opencv2/highgui/highgui.hpp"
-using namespace cv;
+
+typedef struct {
+    float **indices;
+    float **values;
+    int *sizes;
+} sparseMat;
 
 typedef struct {
     float *array;
@@ -31,6 +34,13 @@ float rel_error(int n, float *a, float *b) {
         if (tmp / sum > max_diff) max_diff=tmp/sum;
     }
     return max_diff;
+}
+float sum(int n, float *a) {
+    float s = 0;
+    for (int i=0; i<n; i++) {
+        s += a[i];
+    }
+    return s;
 }
 void initArray(Array *a, size_t initialSize) {
     //a->array = (float *)malloc(initialSize * sizeof(float));
@@ -155,19 +165,11 @@ void mat_dot_mat(int N, float **I_kernel, float **V, float **R) {
     }
 }
 
-int mardas() {
-    int imax = 32;
-    int jmax = 32;
-    int kmax = 32;
+float** create_kernel(int imax, int jmax, int kmax, float w) {
     int n1 = imax+3;
     int n2 = jmax+3;
     int n3 = kmax+3;
     int N = n1*n2*n3;
-    float w = 1.68;
-    printf("N = %d\n", N);
-    Array **indices;
-    Array **values;
-
     float **my_mat;
     cudaMallocManaged(&my_mat, N*sizeof(my_mat));
     for (int i=0; i<N; i++) {
@@ -196,20 +198,12 @@ int mardas() {
         my_mat[I][I+n2*n3] += w / 6.;
         my_mat[I][I] += 1 - w;
     }
+    return my_mat;
+}
 
-//    for (int i=0; i<N; i++) {
-//        int num_values = rand() % (N / 10);
-//        for (int j=0; j < num_values; j++) {
-//            my_mat[i][rand()%N] = 1;
-//        }
-//    }
-
-    float *my_vector;
-    cudaMallocManaged(&my_vector, N * sizeof(float));
-    for (int i=0; i < N; i++) {
-        my_vector[i] = 1;
-    }
-
+sparseMat* dense_to_sparse(int N, float** my_mat) {
+    Array **indices;
+    Array **values;
     indices = (Array **) malloc(N * sizeof(indices));
     values  = (Array **) malloc(N * sizeof(values));
     for (int i=0; i < N; i++) {
@@ -237,9 +231,37 @@ int mardas() {
             values_mardas[i][j] = values[i]->array[j];
         }
     }
+    sparseMat *sp = (sparseMat *) malloc(sizeof(sparseMat));
+    sp->indices=indices_mardas;
+    sp->values=values_mardas;
+    sp->sizes=size_mardas;
+    return sp;
+}
 
-    dim3 dimBlock(32, 1); 
-    dim3 dimGrid(N/32, 1); 
+void mardas(int imax, int jmax, int kmax) {
+    int n1 = imax+3;
+    int n2 = jmax+3;
+    int n3 = kmax+3;
+    int N = n1*n2*n3;
+    float w = 1.68;
+    printf("N = %d\n", N);
+
+    float **my_mat = create_kernel(imax, jmax, kmax, w);
+//    for (int i=0; i<N; i++) {
+//        int num_values = rand() % (N / 10);
+//        for (int j=0; j < num_values; j++) {
+//            my_mat[i][rand()%N] = 1;
+//        }
+//    }
+
+    float *my_vector;
+    cudaMallocManaged(&my_vector, N * sizeof(float));
+    for (int i=0; i < N; i++) {
+        my_vector[i] = 1;
+    }
+    
+    sparseMat *sp = dense_to_sparse(N, my_mat);
+
 
     float begin, time_spend;
 
@@ -256,16 +278,18 @@ int mardas() {
     printf("Time spent with NORMAL NO parallelization: %f\n", time_spend);
 
     begin = clock();
-    array_dot_vec2(N, indices_mardas, values_mardas, size_mardas, my_vector, result2);
+    array_dot_vec2(N, sp->indices, sp->values, sp->sizes, my_vector, result2);
     time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
     printf("Time spent with spase NO parallelization: %f\n", time_spend);
 
     begin = clock();
-    array_dot_vec_cu<<<N, 1>>>(N, indices_mardas, values_mardas, size_mardas, my_vector, result3); cudaDeviceSynchronize();
+    array_dot_vec_cu<<<N, 1>>>(N, sp->indices, sp->values, sp->sizes, my_vector, result3); cudaDeviceSynchronize();
     time_spend = (float) (clock() - begin) / CLOCKS_PER_SEC;
     printf("Time spent with spase WITH parallelization: %f\n", time_spend);
-    printf("%f\n", rel_error(N, result1, result2));
-    printf("%f\n", rel_error(N, result1, result3));
+    printf("relative error 1 and 2: %f\n", rel_error(N, result1, result2));
+    printf("relative error 1 and 3: %f\n", rel_error(N, result1, result3));
+    printf("sum 1: %f\n", sum(N, result1));
+    printf("sum 2: %f\n", sum(N, result2));
 
     printf("done");
 
@@ -301,5 +325,9 @@ int mardas() {
     //mat_dot_mat(N, I_kernel, I_kernel, A);
 }
 int main() {
-    mardas();
+    int imax = 32;
+    int jmax = 16;
+    int kmax = 16;
+ 
+    mardas(imax, jmax, kmax);
 }

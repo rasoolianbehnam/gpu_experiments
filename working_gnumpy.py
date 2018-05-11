@@ -114,6 +114,7 @@ class poisson_vectorized:
             
 
         print("Finished creating kernels.")
+        print("sum of kernel: %f", np.sum(self.kernels['poisson']));
         if self.method == 'coo':
             print("Starting coo conversion")
             for key in self.kernels:

@@ -68,6 +68,8 @@ class poisson_vectorized:
         self.num_iterations = num_iterations
         print("Starting to create kernels...")
         for I in range(0, n1*n2*n3):
+            if (I % 1000 == 0):
+                print("%d / %d"%(I, n1*n2*n3))
             k = I % n3
             s1 = (I - k) // n3
             j = s1 % n2
@@ -77,8 +79,6 @@ class poisson_vectorized:
                 j >= 1 and j < self.jmax+1 and 
                 k >= 1 and k < self.kmax-1):
                 #print(I, i, j, k)
-                if (I % 1000 == 0):
-                    print("%d / %d"%(I, n1*n2*n3))
                 self.kernels['poisson'][I, :] =self.w*1./6* \
                       ( self.kernels['poisson'][I-1, :] \
                       + self.kernels['poisson'][I-n3, :] \
@@ -115,6 +115,8 @@ class poisson_vectorized:
                 self.kernels['poisson'][I, I] = 1
             
 
+        print("w = %f"%(self.w));
+        print("sum of kernel: %f"%np.sum(self.kernels['poisson']))
         print("Finished creating kernels.")
         if self.method == 'coo':
             print("Starting coo conversion")
@@ -190,6 +192,7 @@ class poisson_vectorized:
                 self.Atorch = self.Atorch.cuda()
                 self.Btorch = self.Btorch.cuda()
                 self.kernels['g_torch'] = self.kernels['g_torch'].cuda()
+            print("sum of A: ", np.sum(self.A))
 
             print("finished!!")
 
