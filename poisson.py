@@ -7,7 +7,7 @@ def printf(text, *args):
 imax=16
 jmax=16
 kmax=16
-tmax=50
+tmax=40
 upper_lim = 3
 n1 = imax+upper_lim
 n2 = jmax+upper_lim

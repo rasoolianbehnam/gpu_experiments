@@ -8,10 +8,20 @@
 #define my_index 3
 
 typedef struct {
+    float **A;
+    float **B;
+} Mats;
+
+typedef struct {
     float **indices;
     float **values;
     int *sizes;
 } sparseMat;
+
+typedef struct {
+    sparseMat *A;
+    sparseMat *B;
+} sparseMats;
 
 typedef struct {
     float *array;
@@ -42,9 +52,18 @@ float sum(int n, float *a) {
     }
     return s;
 }
+float sum2(int n, float **a) {
+    float s = 0;
+    for (int i=0; i<n; i++) {
+        for (int j=0; j<n; j++) {
+            s += a[i][j];
+        }
+    }
+    return s;
+}
 void initArray(Array *a, size_t initialSize) {
-    //a->array = (float *)malloc(initialSize * sizeof(float));
-    cudaMallocManaged(&(a->array), initialSize * sizeof(float));
+    a->array = (float *)malloc(initialSize * sizeof(float));
+    //cudaMallocManaged(&(a->array), initialSize * sizeof(float));
     a->used = 0;
     a->size = initialSize;
 }
@@ -79,7 +98,6 @@ void square_matrix_to_sparse(int N, float **mat, Array **indices, Array **values
     }
 }
 
-
 void mat_dot_vec(int N, float **I_kernel, float *V, float *R) {
     for (int i=0; i < N; i++) {
         R[i] = 0;
@@ -89,11 +107,34 @@ void mat_dot_vec(int N, float **I_kernel, float *V, float *R) {
     }
 }
 
-void array_dot_vec(int N, Array **indices, Array **values, float *V, float *R) {
+void mat_dot_mat(int N, float **I_kernel, float **V, float **R) {
     for (int i=0; i < N; i++) {
+        for (int j=0; j < N; j++) {
+            R[i][j] = 0;
+            for (int k=0; k < N; k++) R[i][j] += I_kernel[i][k]*V[k][j];
+        }
+    }
+}
+
+void mat_add_mat(int N, float **I_kernel, float **V, float **R) {
+    for (int i=0; i < N; i++) {
+        for (int j=0; j < N; j++) {
+            R[i][j] = I_kernel[i][j]+V[i][j];
+        }
+    }
+}
+
+void vec_min_vec(int N, float *I_kernel, float *V, float *R) {
+    for (int i=0; i < N; i++) {
+        R[i] = I_kernel[i]-V[i];
+    }
+}
+
+void array_dot_vec(int N, float **indices, float **values, int *sizes, float *V, float *R) {
+    for (int i=0; i < N; i+=1) {
         R[i] = 0;
-        for (int j=0; j < indices[i]->used; j++) {
-            R[i] += values[i]->array[j] * V[(int)indices[i]->array[j]];
+        for (int j=0; j < sizes[i]; j+=1) {
+            R[i] += values[i][j] * V[(int)indices[i][j]];
         }
     }
 }
@@ -104,48 +145,213 @@ float** create_kernel(int imax, int jmax, int kmax, float w) {
     int n3 = kmax+3;
     int N = n1*n2*n3;
     float **my_mat;
-    cudaMallocManaged(&my_mat, N*sizeof(my_mat));
+    //cudaMallocManaged(&my_mat, N*sizeof(my_mat));
+    my_mat = (float**) malloc(N*sizeof(my_mat));
     for (int i=0; i<N; i++) {
-        cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
+        //cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
+        my_mat[i] = (float*) malloc(N*sizeof(my_mat[i]));
     }
     for (int I=0; I<N; I++) {
+        for (int J=0; J<N; J++) my_mat[I][J] = 0;
         int k = I % n3;
         int s1 = (I - k) / n3;
         int j = s1 % n2;
         int i = (s1 - j) / n2;
-        if (i >= 1 && j >= 1 && k >= 1 && i < imax+1 &&
-        j < jmax+1 && k < kmax+1) {
-            for (int j=0; j<N; j++)  {
-                my_mat[I][j] = w / 6. *
-                (my_mat[I-n2*n3][j] +
-                my_mat[I-n2][j] +
-                my_mat[I-1][j]);
+        if (I % 1000 == 0) printf("%4d / %d\n", I, N);
+        if (i >= 1 && i < imax-1 
+                && j >= 1 && j < jmax-1 
+                && k >= 1 && k < kmax-1) {
+            for (int J=0; J<N; J++)  {
+                my_mat[I][J] = w / 6. *
+                (my_mat[I-n2*n3][J] +
+                 my_mat[I-n2][J] +
+                 my_mat[I-1][J]);
             }
+            my_mat[I][I+1]     += w / 6.;
+            my_mat[I][I+n3]    += w / 6.;
+            my_mat[I][I+n2*n3] += w / 6.;
+            my_mat[I][I]       += 1 - w;
         }
         else
-            for (int j=0; j<0; j++)
-                my_mat[I][j] = 0;
+            my_mat[I][I] += 1;
 
-        my_mat[I][I+1] += w / 6.;
-        my_mat[I][I+n3] += w / 6.;
-        my_mat[I][I+n2*n3] += w / 6.;
-        my_mat[I][I] += 1 - w;
     }
+    printf("w = %f\n", w);
+    printf("sum of kernel: %f\n", sum2(N, my_mat));
     return my_mat;
 }
 
 
 
-void mardas(int imax, int jmax, int kmax, int tmax, double *ne, double *ni, double *difxne, double *difyne, double *difxni,
-             double *difyni, double *difxyne, double *difxyni, double *Exy, double *fexy, double *fixy, double *g, double *R,
-              double *Ex, double *Ey, double *fex, double *fey, double *fix, double *fiy, double *V, double *L, double *difzne,
-               double *difzni, double *Ez, double *fez, double *fiz, double qi, double qe, double kr, double ki, double si,
-                double sf, double alpha, double q, double pie, double Ta , double w , double eps0 , double Te, double Ti,
-                 double B, double Kb, double me, double mi, double nue, double nui, double denominator_e, double denominator_i,
-                  double nn, double dt, double h, double wce, double wci, double mue, double mui, double dife, double difi) {
+sparseMat* dense_to_sparse(int N, float** my_mat) {
+    Array **indices;
+    Array **values;
+    indices = (Array **) malloc(N * sizeof(indices));
+    values  = (Array **) malloc(N * sizeof(values));
+    for (int i=0; i < N; i++) {
+        indices[i] = (Array *) malloc(sizeof(indices[i]));
+        values[i] = (Array *) malloc(sizeof(values[i]));
+        initArray(indices[i], N);
+        initArray(values[i], N);
+    }
+    //Converting normal matrix to sparse
+    //the result would be three arrays
+    // indices, values and sizes
+    square_matrix_to_sparse(N, my_mat, indices, values);
+    float **indices_t;
+    float **values_t;
+    int *sizes_t;
+    //cudaMallocManaged(&indices_t, N*sizeof(indices_t));
+    //cudaMallocManaged(&values_t, N*sizeof(values_t));
+    //cudaMallocManaged(&size_t, N*sizeof(size_t));
+    indices_t = (float**) malloc(N*sizeof(indices_t));
+    values_t = (float**) malloc(N*sizeof(values_t));
+    sizes_t = (int*) malloc(N*sizeof(values_t));
+    for (int i=0; i<N; i++) {
+        sizes_t[i] = indices[i]->used;
+        //cudaMallocManaged(&indices_t[i], size_t[i]*sizeof(indices_t[i]));
+        //cudaMallocManaged(&values_t[i], size_t[i]*sizeof(values_t[i]));
+        indices_t[i] = (float*) malloc(sizes_t[i]*sizeof(indices_t[i]));
+        values_t[i] = (float*) malloc(sizes_t[i]*sizeof(values_t[i]));
+        for (int j=0; j<sizes_t[i]; j++) {
+            indices_t[i][j] = indices[i]->array[j];
+            values_t[i][j] = values[i]->array[j];
+        }
+    }
+    sparseMat *sp = (sparseMat *) malloc(sizeof(sparseMat));
+    sp->indices=indices_t;
+    sp->values=values_t;
+    sp->sizes=sizes_t;
+    return sp;
+}
+
+sparseMats* createAB(int N, float **kernel, int iterations, float **A, float **B, float **holder1) {
+    for (int i=0; i<N; i++) {
+        for (int j=0; j<N; j++) {
+            A[i][j] = kernel[i][j];
+            B[i][j] = 0;
+            if (i==j) B[i][j] = 1;
+        }
+    }
+    for (int kk=0; kk < iterations-1; kk++) {
+        printf("iteration %d\n", kk);
+        mat_add_mat(N, B, A, B);
+        mat_dot_mat(N, kernel, A, holder1);
+        float **tmp = holder1;
+        holder1 = A;
+        A = tmp;
+    }
+    sparseMats *AB = (sparseMats *) malloc(sizeof(sparseMats));
+    AB->A = dense_to_sparse(N, A);
+    AB->B = dense_to_sparse(N, B);
+    printf("sum of A: %f", sum2(N, A));
+    return AB;
+}
+
+void poisson_solve3(int imax, int jmax, int kmax, 
+    int n1, int n2, int n3, int N, int iterations, 
+    float* V, float* g, float* g_temp, float *R, float w,
+    float h, sparseMats* AB, float* holder) {
+
+        for (int I=0; I<N; I++) g_temp[I] = w*h*h*g[I]/6.;
+        for (int I=0; I<N; I++) {
+            int k = I % n3;
+            int s1 = (I - k) / n3;
+            int j = s1 % n2;
+            int i = (s1 - j) / n2;
+            if (i >= 1 && i < imax-1 
+                    && j >= 1 && j < jmax-1 
+                    && k >= 1 && k < kmax-1) {
+                g_temp[I] += w/6.*(g_temp[I-1]+g_temp[I-n3]+g_temp[I-n3*n2]);
+            }
+            else {
+                g_temp[I] = 0;
+            }
+        }
+
+        array_dot_vec(N, AB->A->indices, AB->A->values, AB->A->sizes, V, R);
+        array_dot_vec(N, AB->B->indices, AB->B->values, AB->B->sizes, g_temp, holder);
+        vec_min_vec(N, R, holder, V);
+        //printf("\n");
+    }
+
+void poisson_solve2(int imax, int jmax, int kmax, 
+    int n1, int n2, int n3, int N, int iterations, 
+    float* V, float* g, float* g_temp, float *R, float w,
+    float h, sparseMat* kernel, float** kernel2) {
+        for (int I=0; I<N; I++) g_temp[I] = w*h*h*g[I]/6.;
+        for (int I=0; I<N; I++) {
+            int k = I % n3;
+            int s1 = (I - k) / n3;
+            int j = s1 % n2;
+            int i = (s1 - j) / n2;
+            if (i >= 1 && i < imax-1 
+                    && j >= 1 && j < jmax-1 
+                    && k >= 1 && k < kmax-1) {
+                g_temp[I] += w/6.*(g_temp[I-1]+g_temp[I-n3]+g_temp[I-n3*n2]);
+            }
+            else {
+                g_temp[I] = 0;
+            }
+        }
+        for (int kk=0; kk<iterations; kk++) {
+            array_dot_vec(N, kernel->indices, kernel->values, kernel->sizes, V, R);
+            //mat_dot_vec(N, kernel2, V, R);
+            for (int i=0; i<N; i++) V[i] = R[i] - g_temp[i];
+            //printf("%f, ", sum(N, V));
+        }
+        //printf("\n");
+    }
+
+void poisson_solve(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, int iterations, float* V, float* g, float *R, float w, float h) {
+      for (int kk=0; kk<iterations; kk++) {
+        for (int I = 0; I < N; I ++) {
+             int k = I % n3;
+             int s1 = (I - k) / n3;
+             int j = s1 % n2;
+             int i = (s1 - j) / n2;
+            if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+            R[k + n3 * (j + n2 * (i))]=
+                (V[k + n3 * (j + n2 * (i+1))]+
+                     V[k + n3 * (j + n2 * (i-1))]+
+                     V[k + n3 * (j+1 + n2 * (i))]+
+                     V[k + n3 * (j-1 + n2 * (i))]+
+                     V[k+1 + n3 * (j + n2 * (i))]+
+                     V[k-1 + n3 * (j + n2 * (i))]
+                 ) / 6.0 - V[k + n3 * (j + n2 * (i))]- (h*h)*g[k + n3 * (j + n2 * (i))]/6.0;
+            V[k + n3 * (j + n2 * (i))] += w*R[k + n3 * (j + n2 * (i))];
+        }
+    }
+}
+
+void mardas(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni,
+             float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R,
+              float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne,
+               float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si,
+                float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti,
+                 float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i,
+                  float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1;
 
     N=n1*n2*n3;
+float** kernel = create_kernel(imax, jmax, kmax, w);
+sparseMat* sp = dense_to_sparse(N, kernel);
+float** A;
+float** BB;
+float** holder1;
+float* holder2;
+A = (float**) malloc(N*sizeof(A));
+BB = (float**) malloc(N*sizeof(BB));
+holder1 = (float**) malloc(N*sizeof(holder1));
+holder2 = (float*) malloc(N*sizeof(holder2));
+for (int i=0; i<N; i++) {
+    //cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
+    A[i] = (float*) malloc(N*sizeof(A[i]));
+    BB[i] = (float*) malloc(N*sizeof(BB[i]));
+    holder1[i] = (float*) malloc(N*sizeof(holder1[i]));
+}
+int iterations = 5;
+//sparseMats* AB = createAB(N, kernel, iterations, A, BB, holder1);
 
 for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime evolution
      fuckingCount = 0;
@@ -159,7 +365,7 @@ for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime e
 
         printf("%d \n", myTime);
 
-      // Solving Poisson's eq. to get the voltage everywhere
+      // Solving P//oisson's eq. to get the voltage everywhere
   // Here we calculate the right hand side of the Poisson equation
 
 
@@ -180,25 +386,9 @@ for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime e
 /////!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 // solving Poisson eq. using  successive over-relaxation method
 
-
-      for ( kk=0; kk<40; kk++) {
-        for ( I = 0; I < N; I ++) {
-             k = I % n3;
-             s1 = (I - k) / n3;
-             j = s1 % n2;
-             i = (s1 - j) / n2;
-            if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
-            R[k + n3 * (j + n2 * (i))]=
-                (V[k + n3 * (j + n2 * (i+1))]+
-                     V[k + n3 * (j + n2 * (i-1))]+
-                     V[k + n3 * (j+1 + n2 * (i))]+
-                     V[k + n3 * (j-1 + n2 * (i))]+
-                     V[k+1 + n3 * (j + n2 * (i))]+
-                     V[k-1 + n3 * (j + n2 * (i))]
-                 ) / 6.0 - V[k + n3 * (j + n2 * (i))]- (h*h)*g[k + n3 * (j + n2 * (i))]/6.0;
-            V[k + n3 * (j + n2 * (i))] += w*R[k + n3 * (j + n2 * (i))];
-        }
-    }
+    //poisson_solve(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
+    poisson_solve2(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, sp, kernel);
+    //poisson_solve3(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, AB, holder2);
 
 
 
@@ -582,63 +772,64 @@ for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime e
 
 int main()
 {
-int imax = 32, jmax = 32, kmax = 64,i,j,k;
+int imax = 16, jmax = 16, kmax = 16,i,j,k;
 int n1 = imax+3, n2 = jmax+3, n3 = kmax+3;
-double qi=1.6E-19,qe=-1.6E-19, kr = 0,ki = 0,si = 0,sf = 0,alpha = 0, q=1.6E-19,pie=3.14159,Ta,w,eps0,Te,Ti,B,Kb,me,mi,nue,nui,denominator_e,denominator_i,nn,dt,h,wce,wci,mue,mui,dife,difi;
-int tmax = 100;
-
-double *ne;
-double *ni;
-double *difxne;
-double *difyne;
-double *difxni;
-double *difyni;
-double *difxyne;
-double *difxyni;
-double *Exy;
-double *fexy;
-double *fixy;
-double *g;
-double *R;
-double *Ex;
-double *Ey;
-double *fex;
-double *fey;
-double *fix;
-double *fiy;
-double *V;
-double *L;
-double *difzne;
-double *difzni;
-double *Ez;
-double *fez;
-double *fiz;
-    ne = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    ni = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    difxne = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    difyne = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    difxni = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    difyni = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    difxyne = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    difxyni = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    Exy = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    fexy = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    fixy = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    g = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    R = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    Ex = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    Ey = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    fex = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    fey = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    fix = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    fiy = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    V = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    L = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    difzne = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    difzni = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    Ez = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    fez = (double *) malloc(n1 * n2 * n3 * sizeof(double));
-    fiz = (double *) malloc(n1 * n2 * n3 * sizeof(double));
+float qi=1.6E-19,qe=-1.6E-19, kr = 0,ki = 0,si = 0,sf = 0,alpha = 0, q=1.6E-19,pie=3.14159,Ta,w,eps0,Te,Ti,B,Kb,me,mi,nue,nui,denominator_e,denominator_i,nn,dt,h,wce,wci,mue,mui,dife,difi;
+int tmax = 20;
+float *ne;
+float *ni;
+float *difxne;
+float *difyne;
+float *difxni;
+float *difyni;
+float *difxyne;
+float *difxyni;
+float *Exy;
+float *fexy;
+float *fixy;
+float *g;
+float *g_temp;
+float *R;
+float *Ex;
+float *Ey;
+float *fex;
+float *fey;
+float *fix;
+float *fiy;
+float *V;
+float *L;
+float *difzne;
+float *difzni;
+float *Ez;
+float *fez;
+float *fiz;
+    ne = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    ni = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    difxne = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    difyne = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    difxni = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    difyni = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    difxyne = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    difxyni = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    Exy = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    fexy = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    fixy = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    g = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    g_temp = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    R = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    Ex = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    Ey = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    fex = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    fey = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    fix = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    fiy = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    V = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    L = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    difzne = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    difzni = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    Ez = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    fez = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    fiz = (float *) malloc(n1 * n2 * n3 * sizeof(float));
 
     Kb    = 1.38E-23;
     B     = 0.0;
@@ -677,7 +868,7 @@ double *fiz;
                 fey[k + n3 * (j + n2 * (i))] = 1e-9;
                 fix[k + n3 * (j + n2 * (i))] = 1e-9;
                 fiy[k + n3 * (j + n2 * (i))] = 1e-9;
-                V[k + n3 * (j + n2 * (i))] = 1e-9;
+                V[k + n3 * (j + n2 * (i))] = (rand() % 10)/10.;
                 L[k + n3 * (j + n2 * (i))] = 1e-9;
                 difzne[k + n3 * (j + n2 * (i))] = 1e-9;
                 difzni[k + n3 * (j + n2 * (i))] = 1e-9;
@@ -702,7 +893,7 @@ double *fiz;
     denominator_e= (1+wce*wce/(nue*nue));
     denominator_i= (1+wci*wci/(nui*nui));
     // Ta and W are just some constants needed for the iterative method that we have used to solve Poisson eq.
-    Ta=acos((cos(pie/imax)+cos(pie/jmax)+cos(pie/kmax))/3.0);// needs to be double checked
+    Ta=acos((cos(pie/imax)+cos(pie/jmax)+cos(pie/kmax))/3.0);// needs to be float checked
     w=2.0/(1.0+sin(Ta));
 // -----------------------------------------------------------------------------------------------
       //Density initialization
@@ -732,12 +923,12 @@ double *fiz;
         }
 // -----------------------------------------------------------------------------------------------
 
-mardas(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+mardas(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
 
 
 
 
-    printf("%f\n", V[25 + (kmax+3) * (13 + (jmax+3) * 13)]);
+    printf("%f\n", V[5 + (kmax+3) * (5 + (jmax+3) * 5)]);
  //   printf("%f\n", V[my_index + (kmax+3) * (my_index + (jmax+3) * my_index)]);
 
 }

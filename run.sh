@@ -14,7 +14,7 @@ then
     python $1;
 elif [[ $1 = *.c ]]; 
 then
-    echo gcc -c $1 -o tmp.o | bash -x && echo gcc -static tmp.o -lm -o ${fileName}.out | bash -x && echo ./${fileName}.out | bash -x
+    echo clang -c $1 -o tmp.o | bash -x && echo gcc -static tmp.o -lm -o ${fileName}.out | bash -x && echo ./${fileName}.out | bash -x
     #echo gcc $1 -o ${fileName}_cpp | bash -x && echo ./${fileName}_cpp | bash -x
 elif [[ $1 = *.m ]]; 
 then

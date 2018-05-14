@@ -62,7 +62,7 @@ float sum2(int n, float **a) {
     return s;
 }
 void initArray(Array *a, size_t initialSize) {
-    a->array = (float *)malloc(initialSize * sizeof(float));
+    cudaMallocManaged(&(a->array ), initialSize * sizeof(float));
     //cudaMallocManaged(&(a->array), initialSize * sizeof(float));
     a->used = 0;
     a->size = initialSize;
@@ -116,6 +116,17 @@ void mat_dot_mat(int N, float **I_kernel, float **V, float **R) {
     }
 }
 
+__global__ void mat_dot_mat_cu(int N, float **I_kernel, float **V, float **R) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    for (int i=index_x; i < N; i+=stride_x) {
+        for (int j=0; j < N; j++) {
+            R[i][j] = 0;
+            for (int k=0; k < N; k++) R[i][j] += I_kernel[i][k]*V[k][j];
+        }
+    }
+}
+
 void mat_add_mat(int N, float **I_kernel, float **V, float **R) {
     for (int i=0; i < N; i++) {
         for (int j=0; j < N; j++) {
@@ -139,6 +150,16 @@ void array_dot_vec(int N, float **indices, float **values, int *sizes, float *V,
     }
 }
 
+__global__ void array_dot_vec_cu(int N, float **indices, float **values, int *sizes, float *V, float *R) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    for (int i=index_x; i < N; i+=stride_x) {
+        R[i] = 0;
+        for (int j=0; j < sizes[i]; j+=1) {
+            R[i] += values[i][j] * V[(int)indices[i][j]];
+        }
+    }
+}
 float** create_kernel(int imax, int jmax, int kmax, float w) {
     int n1 = imax+3;
     int n2 = jmax+3;
@@ -146,10 +167,10 @@ float** create_kernel(int imax, int jmax, int kmax, float w) {
     int N = n1*n2*n3;
     float **my_mat;
     //cudaMallocManaged(&my_mat, N*sizeof(my_mat));
-    my_mat = (float**) malloc(N*sizeof(my_mat));
+    cudaMallocManaged(&(my_mat ), N*sizeof(my_mat));
     for (int i=0; i<N; i++) {
         //cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
-        my_mat[i] = (float*) malloc(N*sizeof(my_mat[i]));
+        cudaMallocManaged(&(my_mat[i] ), N*sizeof(my_mat[i]));
     }
     for (int I=0; I<N; I++) {
         for (int J=0; J<N; J++) my_mat[I][J] = 0;
@@ -164,16 +185,16 @@ float** create_kernel(int imax, int jmax, int kmax, float w) {
             for (int J=0; J<N; J++)  {
                 my_mat[I][J] = w / 6. *
                 (my_mat[I-n2*n3][J] +
-                my_mat[I-n2][J] +
-                my_mat[I-1][J]);
+                 my_mat[I-n2][J] +
+                 my_mat[I-1][J]);
             }
-            my_mat[I][I+1] += w / 6.;
-            my_mat[I][I+n3] += w / 6.;
+            my_mat[I][I+1]     += w / 6.;
+            my_mat[I][I+n3]    += w / 6.;
             my_mat[I][I+n2*n3] += w / 6.;
-            my_mat[I][I] += 1 - w;
+            my_mat[I][I]       += 1 - w;
         }
         else
-            my_mat[I][I] = 1;
+            my_mat[I][I] += 1;
 
     }
     printf("w = %f\n", w);
@@ -186,11 +207,11 @@ float** create_kernel(int imax, int jmax, int kmax, float w) {
 sparseMat* dense_to_sparse(int N, float** my_mat) {
     Array **indices;
     Array **values;
-    indices = (Array **) malloc(N * sizeof(indices));
-    values  = (Array **) malloc(N * sizeof(values));
+    cudaMallocManaged(&(indices ), N * sizeof(indices));
+    cudaMallocManaged(&(values  ), N * sizeof(values));
     for (int i=0; i < N; i++) {
-        indices[i] = (Array *) malloc(sizeof(indices[i]));
-        values[i] = (Array *) malloc(sizeof(values[i]));
+        cudaMallocManaged(&(indices[i] ), sizeof(indices[i]));
+        cudaMallocManaged(&(values[i] ), sizeof(values[i]));
         initArray(indices[i], N);
         initArray(values[i], N);
     }
@@ -204,21 +225,22 @@ sparseMat* dense_to_sparse(int N, float** my_mat) {
     //cudaMallocManaged(&indices_t, N*sizeof(indices_t));
     //cudaMallocManaged(&values_t, N*sizeof(values_t));
     //cudaMallocManaged(&size_t, N*sizeof(size_t));
-    indices_t = (float**) malloc(N*sizeof(indices_t));
-    values_t = (float**) malloc(N*sizeof(values_t));
-    sizes_t = (int*) malloc(N*sizeof(values_t));
+    cudaMallocManaged(&(indices_t ), N*sizeof(indices_t));
+    cudaMallocManaged(&(values_t ), N*sizeof(values_t));
+    cudaMallocManaged(&(sizes_t ), N*sizeof(values_t));
     for (int i=0; i<N; i++) {
         sizes_t[i] = indices[i]->used;
         //cudaMallocManaged(&indices_t[i], size_t[i]*sizeof(indices_t[i]));
         //cudaMallocManaged(&values_t[i], size_t[i]*sizeof(values_t[i]));
-        indices_t[i] = (float*) malloc(sizes_t[i]*sizeof(indices_t[i]));
-        values_t[i] = (float*) malloc(sizes_t[i]*sizeof(values_t[i]));
+        cudaMallocManaged(&(indices_t[i] ), sizes_t[i]*sizeof(indices_t[i]));
+        cudaMallocManaged(&(values_t[i] ), sizes_t[i]*sizeof(values_t[i]));
         for (int j=0; j<sizes_t[i]; j++) {
             indices_t[i][j] = indices[i]->array[j];
             values_t[i][j] = values[i]->array[j];
         }
     }
-    sparseMat *sp = (sparseMat *) malloc(sizeof(sparseMat));
+    sparseMat *sp;
+    cudaMallocManaged(&sp, sizeof(sp));
     sp->indices=indices_t;
     sp->values=values_t;
     sp->sizes=sizes_t;
@@ -236,12 +258,14 @@ sparseMats* createAB(int N, float **kernel, int iterations, float **A, float **B
     for (int kk=0; kk < iterations-1; kk++) {
         printf("iteration %d\n", kk);
         mat_add_mat(N, B, A, B);
-        mat_dot_mat(N, kernel, A, holder1);
+        //mat_dot_mat(N, kernel, A, holder1);
+        mat_dot_mat_cu<<<N, 1>>>(N, kernel, A, holder1); cudaDeviceSynchronize();
         float **tmp = holder1;
         holder1 = A;
         A = tmp;
     }
-    sparseMats *AB = (sparseMats *) malloc(sizeof(sparseMats));
+    sparseMats *AB;
+    cudaMallocManaged(&AB, sizeof(AB));
     AB->A = dense_to_sparse(N, A);
     AB->B = dense_to_sparse(N, B);
     printf("sum of A: %f", sum2(N, A));
@@ -251,7 +275,8 @@ sparseMats* createAB(int N, float **kernel, int iterations, float **A, float **B
 void poisson_solve3(int imax, int jmax, int kmax, 
     int n1, int n2, int n3, int N, int iterations, 
     float* V, float* g, float* g_temp, float *R, float w,
-    float h, sparseMat* kernel, float** kernel2) {
+    float h, sparseMats* AB, float* holder) {
+
         for (int I=0; I<N; I++) g_temp[I] = w*h*h*g[I]/6.;
         for (int I=0; I<N; I++) {
             int k = I % n3;
@@ -294,7 +319,8 @@ void poisson_solve2(int imax, int jmax, int kmax,
             }
         }
         for (int kk=0; kk<iterations; kk++) {
-            array_dot_vec(N, kernel->indices, kernel->values, kernel->sizes, V, R);
+            //array_dot_vec(N, kernel->indices, kernel->values, kernel->sizes, V, R);
+            array_dot_vec_cu<<<N, 1>>>(N, kernel->indices, kernel->values, kernel->sizes, V, R); cudaDeviceSynchronize();
             //mat_dot_vec(N, kernel2, V, R);
             for (int i=0; i<N; i++) V[i] = R[i] - g_temp[i];
             //printf("%f, ", sum(N, V));
@@ -339,18 +365,18 @@ float** A;
 float** BB;
 float** holder1;
 float* holder2;
-A = (float**) malloc(N*sizeof(A));
-BB = (float**) malloc(N*sizeof(BB));
-holder1 = (float**) malloc(N*sizeof(holder1));
-holder2 = (float*) malloc(N*sizeof(holder2));
+cudaMallocManaged(&(A ), N*sizeof(A));
+cudaMallocManaged(&(BB ), N*sizeof(BB));
+cudaMallocManaged(&(holder1 ), N*sizeof(holder1));
+cudaMallocManaged(&(holder2 ), N*sizeof(holder2));
 for (int i=0; i<N; i++) {
     //cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
-    A[i] = (float*) malloc(N*sizeof(A[i]));
-    BB[i] = (float*) malloc(N*sizeof(BB[i]));
-    holder1[i] = (float*) malloc(N*sizeof(holder1[i]));
+    cudaMallocManaged(&(A[i] ), N*sizeof(A[i]));
+    cudaMallocManaged(&(BB[i] ), N*sizeof(BB[i]));
+    cudaMallocManaged(&(holder1[i] ), N*sizeof(holder1[i]));
 }
 int iterations = 5;
-//sparseMats* AB = createAB(N, kernel, iterations, A, BB, holder1);
+sparseMats* AB = createAB(N, kernel, iterations, A, BB, holder1);
 
 for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime evolution
      fuckingCount = 0;
@@ -774,7 +800,7 @@ int main()
 int imax = 16, jmax = 16, kmax = 16,i,j,k;
 int n1 = imax+3, n2 = jmax+3, n3 = kmax+3;
 float qi=1.6E-19,qe=-1.6E-19, kr = 0,ki = 0,si = 0,sf = 0,alpha = 0, q=1.6E-19,pie=3.14159,Ta,w,eps0,Te,Ti,B,Kb,me,mi,nue,nui,denominator_e,denominator_i,nn,dt,h,wce,wci,mue,mui,dife,difi;
-int tmax = 40;
+int tmax = 20;
 float *ne;
 float *ni;
 float *difxne;
@@ -802,33 +828,33 @@ float *difzni;
 float *Ez;
 float *fez;
 float *fiz;
-    ne = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    ni = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    difxne = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    difyne = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    difxni = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    difyni = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    difxyne = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    difxyni = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    Exy = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    fexy = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    fixy = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    g = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    g_temp = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    R = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    Ex = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    Ey = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    fex = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    fey = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    fix = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    fiy = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    V = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    L = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    difzne = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    difzni = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    Ez = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    fez = (float *) malloc(n1 * n2 * n3 * sizeof(float));
-    fiz = (float *) malloc(n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(ne ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(ni ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(difxne ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(difyne ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(difxni ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(difyni ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(difxyne ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(difxyni ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(Exy ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(fexy ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(fixy ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(g ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(g_temp ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(R ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(Ex ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(Ey ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(fex ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(fey ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(fix ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(fiy ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(V ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(L ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(difzne ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(difzni ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(Ez ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(fez ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(fiz ), n1 * n2 * n3 * sizeof(float));
 
     Kb    = 1.38E-23;
     B     = 0.0;

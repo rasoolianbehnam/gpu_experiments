@@ -9,7 +9,7 @@ import numpy as np
 from scipy.sparse import csr_matrix, lil_matrix, coo_matrix, eye
 import time
 import os.path
-import torch
+#import torch
 
 def mat_pow(a, k, b):
     if k == 0:
@@ -92,9 +92,9 @@ class poisson_vectorized:
 #                      + g[I-self.n3]
 #                      + g[I-self.n3*self.n2])
                 self.kernels['g'][I, :] = self.w * 1./6*\
-                        (self.kernels['g'][I-1,:] \
-                        +self.kernels['g'][I-self.n3, :] \
-                        +self.kernels['g'][I-self.n3*self.n2, :] \
+                        ( self.kernels['g'][I-1,:] \
+                        + self.kernels['g'][I-self.n3, :] \
+                        + self.kernels['g'][I-self.n3*self.n2, :] \
                         )
                 self.kernels['g'][I, I] += 1
 
