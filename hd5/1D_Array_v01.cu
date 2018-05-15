@@ -380,21 +380,6 @@ void poisson_solve3(int imax, int jmax, int kmax,
     float* V, float* g, float* g_temp, float *R, float w,
     float h, sparseMats* AB, float* holder) {
 
-        for (int I=0; I<N; I++) g_temp[I] = w*h*h*g[I]/6.;
-        for (int I=0; I<N; I++) {
-            int k = I % n3;
-            int s1 = (I - k) / n3;
-            int j = s1 % n2;
-            int i = (s1 - j) / n2;
-            if (i >= 1 && i < imax-1 
-                    && j >= 1 && j < jmax-1 
-                    && k >= 1 && k < kmax-1) {
-                g_temp[I] += w/6.*(g_temp[I-1]+g_temp[I-n3]+g_temp[I-n3*n2]);
-            }
-            else {
-                g_temp[I] = 0;
-            }
-        }
 
         //array_dot_vec(N, AB->A->indices, AB->A->values, AB->A->sizes, V, R);
         //array_dot_vec_cu<<<1024, 1024>>>(N, AB->A->indices, AB->A->values, AB->A->sizes, V, R); cudaDeviceSynchronize();
@@ -414,26 +399,13 @@ __global__ void poisson_solve3_cu(int imax, int jmax, int kmax,
 
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
     int stride_x = blockDim.x * gridDim.x;
-        for (int I=index_x; I<N; I+=stride_x) g_temp[I] = w*h*h*g[I]/6.;
-        for (int I=index_x; I<N; I+=stride_x) {
-            int k = I % n3;
-            int s1 = (I - k) / n3;
-            int j = s1 % n2;
-            int i = (s1 - j) / n2;
-            if (i >= 1 && i < imax-1 
-                    && j >= 1 && j < jmax-1 
-                    && k >= 1 && k < kmax-1) {
-                g_temp[I] += w/6.*(g_temp[I-1]+g_temp[I-n3]+g_temp[I-n3*n2]);
-            }
-            else {
-                g_temp[I] = 0;
-            }
-        }
     for (int i=index_x; i < N; i+=stride_x) {
         R[i] = 0;
         for (int j=0; j < AB->A->sizes[i]; j+=1) {
             R[i] += AB->A->values[i][j] * V[(int)AB->A->indices[i][j]];
         }
+    }
+    for (int i=index_x; i < N; i+=stride_x) {
         for (int j=0; j < AB->B->sizes[i]; j+=1) {
             R[i] -= AB->B->values[i][j] * g[(int)AB->B->indices[i][j]];
         }
@@ -504,11 +476,91 @@ void poisson_solve(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, 
     }
 }
 
+__global__ void poisson_solve_1it_even_cu(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, int iterations, float* V, float* g, float *R, float w, float h) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+        for (int I = index_x; I < N; I +=stride_x) {
+             int k = I % n3;
+             int s1 = (I - k) / n3;
+             int j = s1 % n2;
+             int i = (s1 - j) / n2;
+            if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+            if ((i+j+k)%2==0) continue;
+            R[k + n3 * (j + n2 * (i))]=
+                (V[k + n3 * (j + n2 * (i+1))]+
+                     V[k + n3 * (j + n2 * (i-1))]+
+                     V[k + n3 * (j+1 + n2 * (i))]+
+                     V[k + n3 * (j-1 + n2 * (i))]+
+                     V[k+1 + n3 * (j + n2 * (i))]+
+                     V[k-1 + n3 * (j + n2 * (i))]
+                 ) / 6.0 - V[k + n3 * (j + n2 * (i))]- (h*h)*g[k + n3 * (j + n2 * (i))]/6.0;
+            V[k + n3 * (j + n2 * (i))] += w*R[k + n3 * (j + n2 * (i))];
+        }
+}
+__global__ void poisson_solve_1it_odd_cu(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, int iterations, float* V, float* g, float *R, float w, float h) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+        for (int I = index_x; I < N; I +=stride_x) {
+             int k = I % n3;
+             int s1 = (I - k) / n3;
+             int j = s1 % n2;
+             int i = (s1 - j) / n2;
+            if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+            if ((i+j+k)%2==1) continue;
+            R[k + n3 * (j + n2 * (i))]=
+                (V[k + n3 * (j + n2 * (i+1))]+
+                     V[k + n3 * (j + n2 * (i-1))]+
+                     V[k + n3 * (j+1 + n2 * (i))]+
+                     V[k + n3 * (j-1 + n2 * (i))]+
+                     V[k+1 + n3 * (j + n2 * (i))]+
+                     V[k-1 + n3 * (j + n2 * (i))]
+                 ) / 6.0 - V[k + n3 * (j + n2 * (i))]- (h*h)*g[k + n3 * (j + n2 * (i))]/6.0;
+            V[k + n3 * (j + n2 * (i))] += w*R[k + n3 * (j + n2 * (i))];
+        }
+}
+__global__ void poisson_solve_cu(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, int iterations, float* V, float* g, float *R, float w, float h) {
+      for (int kk=0; kk<iterations; kk++) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+        for (int I = index_x; I < N; I +=stride_x) {
+             int k = I % n3;
+             int s1 = (I - k) / n3;
+             int j = s1 % n2;
+             int i = (s1 - j) / n2;
+            if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+            R[k + n3 * (j + n2 * (i))]=
+                (V[k + n3 * (j + n2 * (i+1))]+
+                     V[k + n3 * (j + n2 * (i-1))]+
+                     V[k + n3 * (j+1 + n2 * (i))]+
+                     V[k + n3 * (j-1 + n2 * (i))]+
+                     V[k+1 + n3 * (j + n2 * (i))]+
+                     V[k-1 + n3 * (j + n2 * (i))]
+                 ) / 6.0 - V[k + n3 * (j + n2 * (i))]- (h*h)*g[k + n3 * (j + n2 * (i))]/6.0;
+            V[k + n3 * (j + n2 * (i))] += w*R[k + n3 * (j + n2 * (i))];
+        }
+    }
+}
 void before(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int index_x = 0;
     int stride_x = 1;
     int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
+        for (int I=0; I<N; I++) g_temp[I] = w*h*h*g[I]/6.;
+        for (int I=0; I<N; I++) {
+            int k = I % n3;
+            int s1 = (I - k) / n3;
+            int j = s1 % n2;
+            int i = (s1 - j) / n2;
+            if (i >= 1 && i < imax-1 
+                    && j >= 1 && j < jmax-1 
+                    && k >= 1 && k < kmax-1) {
+                g_temp[I] += w/6.*(g_temp[I-1]+g_temp[I-n3]+g_temp[I-n3*n2]);
+            }
+            else {
+                g_temp[I] = 0;
+            }
+        }
+
       for ( I = index_x; I < N; I += stride_x) {
          k = I % n3;
          s1 = (I - k) / n3;
@@ -524,6 +576,22 @@ __global__ void before_cu(int imax, int jmax, int kmax, int tmax, float *ne, flo
     int stride_x = blockDim.x * gridDim.x;
     int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
+    for (int I=index_x; I<N; I+=stride_x) g_temp[I] = w*h*h*g[I]/6.;
+    for (int I=index_x; I<N; I+=stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+        if (i >= 1 && i < imax-1 
+                && j >= 1 && j < jmax-1 
+                && k >= 1 && k < kmax-1) {
+            g_temp[I] += w/6.*(g_temp[I-1]+g_temp[I-n3]+g_temp[I-n3*n2]);
+        }
+        else {
+            g_temp[I] = 0;
+        }
+    }
+
       for ( I = index_x; I < N; I += stride_x) {
          k = I % n3;
          s1 = (I - k) / n3;
@@ -534,6 +602,413 @@ __global__ void before_cu(int imax, int jmax, int kmax, int tmax, float *ne, flo
     }
  
 }
+
+void after2(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
+    int index_x = 0;
+    int stride_x = 1;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+        if (i * j * k == 0 || i >= imax+1 || j >= jmax+1 || k >= kmax-1) continue;
+        Ex[I]= (V[I]-V[I + n2 * n3])/h;
+        Ey[I]= (V[I]-V[I + n3])/h;
+        difxne[I]=(ne[I + n2 * n3]-ne[I])/h;
+        difxni[I]=(ni[I + n2 * n3]-ni[I])/h;
+        difyne[I]=(ne[I + n3]-ne[I])/h;
+        difyni[I]=(ni[I + n3]-ni[I])/h;
+    }
+
+
+     //for (int k=0; k<kmax-1; k++) {
+     //   for (int i=1; i<imax+1;i++) {
+     //     for (int j=1; j<jmax+1;j++) {
+     //      Ez[k + n3 * (j + n2 * (i))]= (V[k + n3 * (j + n2 * (i))]-V[k+1 + n3 * (j + n2 * (i))])/h;
+     //      difzne[k + n3 * (j + n2 * (i))]=(ne[k+1 + n3 * (j + n2 * (i))]-ne[k + n3 * (j + n2 * (i))])/h;
+     //      difzni[k + n3 * (j + n2 * (i))]=(ni[k+1 + n3 * (j + n2 * (i))]-ni[k + n3 * (j + n2 * (i))])/h;
+     //     }
+     //   }
+     //}
+
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+        if (i * j== 0 || i >= imax+1 || j >= jmax+1 || k >= kmax-1) continue;
+        Ez[I]= (V[I]-V[I + 1])/h;
+        difzne[I]=(ne[I + 1]-ne[I])/h;
+        difzni[I]=(ni[I + 1]-ni[I])/h;
+    }
+
+// -----------------------------------------------------------------------------------------------
+       /* Since I am using mid points for Calculating electric field and density gradient,
+        to calculate Ex at any point that I don't have it directly, the average over
+        the neighboring points is used instead. these average variables are, exy, fexy, fixy, ...*/
+        // Calculating the average values of Ex and gradiant_x
+    //for (int k=1; k<kmax-1; k++) {
+    //  for (int i=2; i<imax+1;i++)   {
+    //   for (int j=1; j<jmax;j++) {
+    //    Exy[k + n3 * (j + n2 * (i))]= 0.25*(Ex[k + n3 * (j + n2 * (i))]+Ex[k + n3 * (j+1 + n2 * (i))]+Ex[k + n3 * (j + n2 * (i-1))]+Ex[k + n3 * (j+1 + n2 * (i-1))]) ;
+    //    difxyne[k + n3 * (j + n2 * (i))]=0.25*(difxne[k + n3 * (j + n2 * (i))]+difxne[k + n3 * (j+1 + n2 * (i))]+difxne[k + n3 * (j + n2 * (i-1))]+difxne[k + n3 * (j+1 + n2 * (i-1))]);
+    //    difxyni[k + n3 * (j + n2 * (i))]=0.25*(difxni[k + n3 * (j + n2 * (i))]+difxni[k + n3 * (j+1 + n2 * (i))]+difxni[k + n3 * (j + n2 * (i-1))]+difxni[k + n3 * (j+1 + n2 * (i-1))]);
+    //   }
+    //  }
+    //}
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+        if (j * k == 0 || i <= 1 || i >= imax+1 || j >= jmax || k >= kmax-1) continue;
+        Exy[I]= 0.25*(Ex[I]+Ex[I + n3]+Ex[I - n2 * n3]+Ex[I + n3 - n2 * n3]) ;
+        difxyne[I]=0.25*(difxne[I]+difxne[I + n3]+difxne[I - n2 * n3]+difxne[I + n3 - n2 * n3]);
+        difxyni[I]=0.25*(difxni[I]+difxni[ I + n3]+difxni[I - n2 * n3]+difxni[I + n3 - n2 * n3]);
+    }
+
+        // for (int k=1; k<kmax-1; k++) {
+        //   for (int j=1; j<jmax;j++) {
+        //    Exy[k + n3 * (j + n2 * (1))]= 0.25*(Ex[k + n3 * (j + n2 * (1))]+Ex[k + n3 * (j+1 + n2 * (1))]+Ex[k + n3 * (j + n2 * (imax))]+Ex[k + n3 * (j+1 + n2 * (imax))]) ;
+        //    difxyne[k + n3 * (j + n2 * (1))]=0.25*(difxne[k + n3 * (j + n2 * (1))]+difxne[k + n3 * (j+1 + n2 * (1))]+difxne[k + n3 * (j + n2 * (imax))]+difxne[k + n3 * (j+1 + n2 * (imax))]);
+        //    difxyni[k + n3 * (j + n2 * (1))]=0.25*(difxni[k + n3 * (j + n2 * (1))]+difxni[k + n3 * (j+1 + n2 * (1))]+difxni[k + n3 * (j + n2 * (imax))]+difxni[k + n3 * (j+1 + n2 * (imax))]);
+        //   }
+        //}
+    for (int I = index_x; I < n2 * n3; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        if (j * k == 0 || j >= jmax || k >= kmax-1) continue;
+        Exy[k + n3 * (j + n2 * (1))]= 0.25*(Ex[k + n3 * (j + n2 * (1))]+Ex[k + n3 * (j+1 + n2 * (1))]+Ex[k + n3 * (j + n2 * (imax))]+Ex[k + n3 * (j+1 + n2 * (imax))]) ;
+        difxyne[k + n3 * (j + n2 * (1))]=0.25*(difxne[k + n3 * (j + n2 * (1))]+difxne[k + n3 * (j+1 + n2 * (1))]+difxne[k + n3 * (j + n2 * (imax))]+difxne[k + n3 * (j+1 + n2 * (imax))]);
+        difxyni[k + n3 * (j + n2 * (1))]=0.25*(difxni[k + n3 * (j + n2 * (1))]+difxni[k + n3 * (j+1 + n2 * (1))]+difxni[k + n3 * (j + n2 * (imax))]+difxni[k + n3 * (j+1 + n2 * (imax))]);
+
+    }
+
+        //for (int k=1; k<kmax-1; k++) {
+        //  for (int i=2; i<imax;i++) {
+        //    Exy[k + n3 * (jmax + n2 * (i))]= 0.25*(Ex[k + n3 * (jmax + n2 * (i))]+Ex[k + n3 * (1 + n2 * (i))]+Ex[k + n3 * (jmax + n2 * (i-1))]+Ex[k + n3 * (1 + n2 * (i-1))]) ;
+        //    difxyne[k + n3 * (jmax + n2 * (i))]=0.25*(difxne[k + n3 * (jmax + n2 * (i))]+difxne[k + n3 * (1 + n2 * (i))]+difxne[k + n3 * (jmax + n2 * (i-1))]+difxne[k + n3 * (1 + n2 * (i-1))]);
+        //    difxyni[k + n3 * (jmax + n2 * (i))]=0.25*(difxni[k + n3 * (jmax + n2 * (i))]+difxni[k + n3 * (1 + n2 * (i))]+difxni[k + n3 * (jmax + n2 * (i-1))]+difxni[k + n3 * (1 + n2 * (i-1))]);
+        //   }
+        //  }
+    for (int I = index_x; I < n1 * n3; I += stride_x) {
+        int k = I % n3;
+        int i = (I - k) / n3;                                                                                  
+        if (k == 0 || i <= 1 || i >= imax ||  k >= kmax-1) continue;
+        difxyne[k + n3 * (jmax + n2 * (i))]=0.25*(difxne[k + n3 * (jmax + n2 * (i))]+difxne[k + n3 * (1 + n2 * (i))]+difxne[k + n3 * (jmax + n2 * (i-1))]+difxne[k + n3 * (1 + n2 * (i-1))]);
+        difxyni[k + n3 * (jmax + n2 * (i))]=0.25*(difxni[k + n3 * (jmax + n2 * (i))]+difxni[k + n3 * (1 + n2 * (i))]+difxni[k + n3 * (jmax + n2 * (i-1))]+difxni[k + n3 * (1 + n2 * (i-1))]);
+
+    }
+        // Calculating Exy and difxy at the corners
+      for (int k=1; k<kmax-1;k++) {
+        Exy[k + n3 * (jmax + n2 * (imax))]=(Ex[k + n3 * (jmax + n2 * (imax))]+Ex[k + n3 * (jmax + n2 * (imax-1))]+Ex[k + n3 * (1 + n2 * (imax-1))])/3.0;
+        difxyne[k + n3 * (jmax + n2 * (imax))]=(difxne[k + n3 * (jmax + n2 * (imax))]+difxne[k + n3 * (jmax + n2 * (imax-1))]+difxne[k + n3 * (1 + n2 * (imax-1))])/3.0;
+        difxyni[k + n3 * (jmax + n2 * (imax))]=(difxni[k + n3 * (jmax + n2 * (imax))]+difxni[k + n3 * (jmax + n2 * (imax-1))]+difxni[k + n3 * (1 + n2 * (imax-1))])/3.0;
+        Exy[k + n3 * (jmax + n2 * (1))]=(Ex[k + n3 * (jmax + n2 * (1))]+Ex[k + n3 * (jmax + n2 * (imax))]+Ex[k + n3 * (1 + n2 * (1))])/3.0;
+        difxyne[k + n3 * (jmax + n2 * (1))]=(difxne[k + n3 * (jmax + n2 * (1))]+difxne[k + n3 * (jmax + n2 * (imax))]+difxne[k + n3 * (1 + n2 * (1))])/3.0;
+        difxyni[k + n3 * (jmax + n2 * (1))]=(difxni[k + n3 * (jmax + n2 * (1))]+difxni[k + n3 * (jmax + n2 * (imax))]+difxni[k + n3 * (1 + n2 * (1))])/3.0;
+      }
+
+// -----------------------------------------------------------------------------------------------
+        // Here we calculate the fluxes in y direction
+        
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                      
+        if (i * j * k == 0 || i >= imax+1 || j >= jmax || k >= kmax-1) continue;
+        fey[I]= (-0.5*(ne[k + n3 * (j+1 + n2 * (i))]+ne[I])*mue*Ey[I]-dife*difyne[I]
+            -wce*q*0.5*(ne[k + n3 * (j+1 + n2 * (i))]+ne[I])*Exy[I]/(me*nue*nue)-wce*dife*difxyne[I]/nue)/denominator_e;
+        fiy[I]= (0.5*(ni[k + n3 * (j+1 + n2 * (i))]+ni[I])*mui*Ey[I]-difi*difyni[I]
+            -wci*q*0.5*(ni[k + n3 * (j+1 + n2 * (i))]+ni[I])*Exy[I]/(mi*nui*nui)+wci*difi*difxyni[I]/nui)/denominator_i;
+
+    } 
+       
+    for (int I = index_x; I < n1 * n3; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int i = s1 % n1; 
+        if (i * k == 0 || i >= imax+1 || k >= kmax-1) continue;
+        fey[I] = fey[I + jmax];
+        fiy[I] = fiy[I + jmax];
+    }
+
+// -----------------------------------------------------------------------------------------------
+        // Calculating the average Exy and difxy to be used in x direction fluxes
+       // Calculating the average values of Ey and gradiant_y
+       //for (int k=1; k<kmax-1; k++) {
+       //   for (int i=1; i<imax;i++)   {
+       //    for (int j=2; j<jmax+1;j++) {
+       //   Exy[k + n3 * (j + n2 * (i))]= 0.25*(Ey[k + n3 * (j + n2 * (i))]+Ey[k + n3 * (j-1 + n2 * (i))]+Ey[k + n3 * (j + n2 * (i+1))]+Ey[k + n3 * (j-1 + n2 * (i+1))]);
+       //   difxyne[k + n3 * (j + n2 * (i))]= 0.25*(difyne[k + n3 * (j + n2 * (i))]+difyne[k + n3 * (j-1 + n2 * (i))]+difyne[k + n3 * (j + n2 * (i+1))]+difyne[k + n3 * (j-1 + n2 * (i+1))]);
+       //   difxyni[k + n3 * (j + n2 * (i))]= 0.25*(difyni[k + n3 * (j + n2 * (i))]+difyni[k + n3 * (j-1 + n2 * (i))]+difyni[k + n3 * (j + n2 * (i+1))]+difyni[k + n3 * (j-1 + n2 * (i+1))]);
+       //  }
+       // }
+       //}
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                  
+        if (i * k == 0 || j < 2 || i >= imax+1 || j >= jmax || k >= kmax-1) continue;
+        Exy[I]= 0.25*(Ey[I]+Ey[I - n3]+Ey[I + n2 * n3]+Ey[I - n3 + n2 * n3]);
+        difxyne[I]= 0.25*(difyne[I]+difyne[I - n3]+difyne[I + n2 * n3]+difyne[I - n3 + n2 * n3]);
+        difxyni[I]= 0.25*(difyni[I]+difyni[I - n3]+difyni[I + n2 * n3]+difyni[I - n3 + n2 * n3]);
+
+    }
+       //for (int k=1; k<kmax-1; k++) {
+       //   for (int i=1; i<imax;i++)   {
+       //   Exy[k + n3 * (1 + n2 * (i))]= 0.25*(Ey[k + n3 * (1 + n2 * (i))]+Ey[k + n3 * (jmax + n2 * (i))]+Ey[k + n3 * (1 + n2 * (i+1))]+Ey[k + n3 * (jmax + n2 * (i+1))]);
+       //   difxyne[k + n3 * (1 + n2 * (i))]= 0.25*(difyne[k + n3 * (1 + n2 * (i))]+difyne[k + n3 * (jmax + n2 * (i))]+difyne[k + n3 * (1 + n2 * (i+1))]+difyne[k + n3 * (jmax + n2 * (i+1))]);
+       //   difxyni[k + n3 * (1 + n2 * (i))]= 0.25*(difyni[k + n3 * (1 + n2 * (i))]+difyni[k + n3 * (jmax + n2 * (i))]+difyni[k + n3 * (1 + n2 * (i+1))]+difyni[k + n3 * (jmax + n2 * (i+1))]);
+       //  }
+       // }
+    for (int I = index_x; I < n3 * n1; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int i = s1 % n1; 
+        if (i * k == 0 || i >= imax || k >= kmax-1) continue;
+        Exy[I + n3]= 0.25*(Ey[k + n3 * (1 + n2 * (i))]+Ey[k + n3 * (jmax + n2 * (i))]+Ey[k + n3 * (1 + n2 * (i+1))]+Ey[k + n3 * (jmax + n2 * (i+1))]);
+        difxyne[I + n3]= 0.25*(difyne[I + n3]+difyne[I + n3 * jmax]+difyne[I + n3 + n2*n3]+difyne[I + n3 * jmax + n2 * n3]);
+        difxyni[I + n3]= 0.25*(difyni[I + n3]+difyni[I + n3 * jmax]+difyni[I + n3 + n2*n3]+difyni[I + n3 * jmax + n2 * n3]);
+
+    }
+       // for (int k=1; k<kmax-1; k++) {
+       //    for (int j=2; j<jmax+1;j++) {
+       //   Exy[k + n3 * (j + n2 * (imax))]= 0.25*(Ey[k + n3 * (j + n2 * (imax))]+Ey[k + n3 * (j-1 + n2 * (imax))]+Ey[k + n3 * (j + n2 * (1))]+Ey[k + n3 * (j-1 + n2 * (1))]);
+       //   difxyne[k + n3 * (j + n2 * (imax))]= 0.25*(difyne[k + n3 * (j + n2 * (imax))]+difyne[k + n3 * (j-1 + n2 * (imax))]+difyne[k + n3 * (j + n2 * (1))]+difyne[k + n3 * (j-1 + n2 * (1))]);
+       //   difxyni[k + n3 * (j + n2 * (imax))]= 0.25*(difyni[k + n3 * (j + n2 * (imax))]+difyni[k + n3 * (j-1 + n2 * (imax))]+difyni[k + n3 * (j + n2 * (1))]+difyni[k + n3 * (j-1 + n2 * (1))]);
+       //  }
+       //}
+    for (int I = index_x; I < n3 * n2; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        if (j * k == 0 || j >= jmax+1 || k >= kmax-1) continue;
+        Exy[I + n2 * n3 * imax]= 0.25*(Ey[I + n2 * n3 * imax]+Ey[I - n3 + imax * n2 * n3]+Ey[k + n3 * (j + n2 * (1))]+Ey[k + n3 * (j-1 + n2 * (1))]);
+        difxyne[I + n2 * n3 * imax]= 0.25*(difyne[I + n2 * n3 * imax]+difyne[I - n3 + imax * n2 * n3]+difyne[I + n2 * n3]+difyne[I - n2 + n2 * n3]);
+        difxyni[I + n2 * n3 * imax]= 0.25*(difyni[I + n2 * n3 * imax]+difyni[I - n3 + imax * n2 * n3]+difyni[I + n2 * n3]+difyni[I - n2 + n2 * n3]);
+}
+        // Calculating Exy and difxy at the corners
+       //for (int k=1; k<kmax-1; k++) {
+       // Exy[k + n3 * (1 + n2 * (imax))]=(Ey[k + n3 * (1 + n2 * (imax))]+Ey[k + n3 * (1 + n2 * (1))]+Ey[k + n3 * (jmax + n2 * (imax))])/3.0;
+       // difxyne[k + n3 * (1 + n2 * (imax))]=(difyne[k + n3 * (1 + n2 * (imax))]+difyne[k + n3 * (1 + n2 * (1))]+difyne[k + n3 * (jmax + n2 * (imax))])/3.0;
+       // difxyni[k + n3 * (1 + n2 * (imax))]=(difyni[k + n3 * (1 + n2 * (imax))]+difyni[k + n3 * (1 + n2 * (1))]+difyni[k + n3 * (jmax + n2 * (imax))])/3.0;
+       // Exy[k + n3 * (jmax + n2 * (imax))]=(Ey[k + n3 * (jmax-1 + n2 * (imax))]+Ey[k + n3 * (jmax + n2 * (imax))]+Ey[k + n3 * (jmax-1 + n2 * (1))])/3.0;
+       // difxyne[k + n3 * (jmax + n2 * (imax))]=(difyne[k + n3 * (jmax-1 + n2 * (imax))]+difyne[k + n3 * (jmax + n2 * (imax))]+difyne[k + n3 * (jmax-1 + n2 * (1))])/3.0;
+       // difxyni[k + n3 * (jmax + n2 * (imax))]=(difyni[k + n3 * (jmax-1 + n2 * (imax))]+difyni[k + n3 * (jmax + n2 * (imax))]+difyni[k + n3 * (jmax-1 + n2 * (1))])/3.0;
+       //}
+    for (int I = index_x; I < kmax-1; I += stride_x) {
+        if (I == 0) continue;
+        Exy[I + n3 * (1 + n2 * (imax))]=(Ey[I + n3 * (1 + n2 * (imax))]+Ey[I + n3 * (1 + n2 * (1))]+Ey[I + n3 * (jmax + n2 * (imax))])/3.0;
+        difxyne[I + n3 * (1 + n2 * (imax))]=(difyne[I + n3 * (1 + n2 * (imax))]+difyne[I + n3 * (1 + n2 * (1))]+difyne[I + n3 * (jmax + n2 * (imax))])/3.0;
+        difxyni[I + n3 * (1 + n2 * (imax))]=(difyni[I + n3 * (1 + n2 * (imax))]+difyni[I + n3 * (1 + n2 * (1))]+difyni[I + n3 * (jmax + n2 * (imax))])/3.0;
+        Exy[I + n3 * (jmax + n2 * (imax))]=(Ey[I + n3 * (jmax-1 + n2 * (imax))]+Ey[I + n3 * (jmax + n2 * (imax))]+Ey[I + n3 * (jmax-1 + n2 * (1))])/3.0;
+        difxyne[I + n3 * (jmax + n2 * (imax))]=(difyne[I + n3 * (jmax-1 + n2 * (imax))]+difyne[I + n3 * (jmax + n2 * (imax))]+difyne[I + n3 * (jmax-1 + n2 * (1))])/3.0;
+        difxyni[I + n3 * (jmax + n2 * (imax))]=(difyni[I + n3 * (jmax-1 + n2 * (imax))]+difyni[I + n3 * (jmax + n2 * (imax))]+difyni[I + n3 * (jmax-1 + n2 * (1))])/3.0;
+    }
+
+// -----------------------------------------------------------------------------------------------
+        // Now ready to calculate the fluxes in x direction
+       //for (int k=1; k<kmax-1; k++) {
+       // for (int j=1; j<jmax+1; j++) {
+       //  for (int i=1; i<imax+1;i++) {
+       //   fex[k + n3 * (j + n2 * (i))]=(-0.5*(ne[k + n3 * (j + n2 * (i))]+ne[k + n3 * (j + n2 * (i+1))])*mue*Ex[k + n3 * (j + n2 * (i))]-dife*difxne[k + n3 * (j + n2 * (i))]
+       //   +wce*dife*difxyne[k + n3 * (j + n2 * (i))]/nue+wce*q*0.5*(ne[k + n3 * (j + n2 * (i))]+ne[k + n3 * (j + n2 * (i+1))])/(me*nue*nue)*Exy[k + n3 * (j + n2 * (i))])/denominator_e;
+       //   fix[k + n3 * (j + n2 * (i))]=(0.5*(ni[k + n3 * (j + n2 * (i))]+ni[k + n3 * (j + n2 * (i+1))])*mui*Ex[k + n3 * (j + n2 * (i))]-difi*difxni[k + n3 * (j + n2 * (i))]
+       //   -wci*difi*difxyni[k + n3 * (j + n2 * (i))]/nui+wci*q*0.5*(ni[k + n3 * (j + n2 * (i))]+ni[k + n3 * (j + n2 * (i+1))])*Exy[k + n3 * (j + n2 * (i))]/(mi*nui*nui))/denominator_i;
+       //  }
+       // }
+       //}
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                  
+        if (i * j * k == 0 || i >= imax+1 || j >= jmax || k >= kmax-1) continue;
+        fex[I]=(-0.5*(ne[I]+ne[I + n2 * n3])*mue*Ex[I]-dife*difxne[I]
+        +wce*dife*difxyne[I]/nue+wce*q*0.5*(ne[I]+ne[I + n2 * n3])/(me*nue*nue)*Exy[I])/denominator_e;
+        fix[I]=(0.5*(ni[I]+ni[I + n2 * n3])*mui*Ex[I]-difi*difxni[I]
+        -wci*difi*difxyni[I]/nui+wci*q*0.5*(ni[I]+ni[I + n2 * n3])*Exy[I]/(mi*nui*nui))/denominator_i;
+    }
+      //for (int k=1; k<kmax-1; k++) {
+      //  for (int j=1; j<jmax+1; j++) {
+      //    fex[k + n3 * (j + n2 * (0))] = fex[k + n3 * (j + n2 * (imax))];
+      //    fix[k + n3 * (j + n2 * (0))] = fix[k + n3 * (j + n2 * (imax))];
+      //  }
+      // }
+    for (int I = index_x; I < n3 * n2; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        if (j * k == 0 || j >= jmax || k >= kmax-1) continue;
+        fex[I] = fex[I + n2 * n3 * imax];
+        fix[I] = fix[I + n2 * n3 * imax];
+    }
+
+// -----------------------------------------------------------------------------------------------
+        // Now we calculate the fluxes in z direction
+       //for (int k=0; k<kmax-1; k++) {
+       // for (int j=1; j<jmax+1; j++) {
+       //  for (int i=1; i<imax+1;i++) {
+       //   fez[k + n3 * (j + n2 * (i))]=-0.5*(ne[k + n3 * (j + n2 * (i))]+ne[k+1 + n3 * (j + n2 * (i))])*mue*Ez[k + n3 * (j + n2 * (i))]-dife*difzne[k + n3 * (j + n2 * (i))];
+       //   fiz[k + n3 * (j + n2 * (i))]=0.5*(ni[k + n3 * (j + n2 * (i))]+ni[k+1 + n3 * (j + n2 * (i))])*mui*Ez[k + n3 * (j + n2 * (i))]-difi*difzni[k + n3 * (j + n2 * (i))];
+       //  }
+       // }
+       //}
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                  
+        if (i * j == 0 || i >= imax+1 || j >= jmax + 1 || k >= kmax-1) continue;
+        fez[I]=-0.5*(ne[I]+ne[I + 1])*mue*Ez[I]-dife*difzne[I];
+        fiz[I]=0.5*(ni[I]+ni[I + 1])*mui*Ez[I]-difi*difzni[I];
+
+    }
+       // BC on fluxes
+     //  for (int i=1; i<imax+1; i++) {
+     //   for (int j=1; j<jmax+1; j++) {
+     //      if (fez[1 + n3 * (j + n2 * (i))]>0.0){
+     //       fez[1 + n3 * (j + n2 * (i))]=0.0;
+     //      }
+     //      if (fiz[1 + n3 * (j + n2 * (i))]>0.0){
+     //       fiz[1 + n3 * (j + n2 * (i))]=0.0;
+     //      }
+     //      if (fez[kmax-1 + n3 * (j + n2 * (i))]<0.0){
+     //       fez[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+     //      }
+     //      if (fiz[kmax-1 + n3 * (j + n2 * (i))]<0.0){
+     //       fiz[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+     //      }
+     //   }
+     // }
+    for (int I = index_x; I < n1 * n2; I += stride_x) {
+        int j = I % n2; 
+        int i = (I - j) / n2;                                                                                  
+        if (i * j == 0 || i >= imax+1 || j >= jmax+1) continue;
+        if (fez[I + 1]>0.0){
+            fez[I + 1]=0.0;
+        }
+        if (fiz[I + 1]>0.0){
+            fiz[I + 1]=0.0;
+        }
+        if (fez[I + kmax - 1]<0.0){
+            fez[I + kmax - 1]=0.0;
+        }
+        if (fiz[I + kmax - 1]<0.0){
+            fiz[I + kmax - 1]=0.0;
+        }
+    }
+
+//// -----------------------------------------------------------------------------------------------
+        // for (int k=1; k<kmax; k++) {
+        //  for (int j=1; j<jmax+1; j++) {
+        //   for (int i=1; i<imax+1;i++) {
+        // ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]-dt*(fex[k + n3 * (j + n2 * (i))]-fex[k + n3 * (j + n2 * (i-1))]+fey[k + n3 * (j + n2 * (i))]-fey[k + n3 * (j-1 + n2 * (i))]+fez[k + n3 * (j + n2 * (i))]-fez[k-1 + n3 * (j + n2 * (i))])/h ;
+        // ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]-dt*(fix[k + n3 * (j + n2 * (i))]-fix[k + n3 * (j + n2 * (i-1))]+fiy[k + n3 * (j + n2 * (i))]-fiy[k + n3 * (j-1 + n2 * (i))]+fiz[k + n3 * (j + n2 * (i))]-fiz[k-1 + n3 * (j + n2 * (i))])/h ;
+        //  }
+        // }
+        //}
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                  
+        if (i * j * k == 0 || i >= imax+1 || j >= jmax+1 || k >= kmax) continue;
+            ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]-dt*(fex[k + n3 * (j + n2 * (i))]-fex[k + n3 * (j + n2 * (i-1))]+fey[k + n3 * (j + n2 * (i))]-fey[k + n3 * (j-1 + n2 * (i))]+fez[k + n3 * (j + n2 * (i))]-fez[k-1 + n3 * (j + n2 * (i))])/h ;
+                     ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]-dt*(fix[k + n3 * (j + n2 * (i))]-fix[k + n3 * (j + n2 * (i-1))]+fiy[k + n3 * (j + n2 * (i))]-fiy[k + n3 * (j-1 + n2 * (i))]+fiz[k + n3 * (j + n2 * (i))]-fiz[k-1 + n3 * (j + n2 * (i))])/h ;
+        }
+//################################################################################################
+//                                                                                               #
+//################################################################################################
+//    for (int j=1; j<jmax+1; j++) {
+//           for (int i=1; i<imax+1;i++) {
+//                ne[0 + n3 * (j + n2 * (i))] = -dt*fez[0 + n3 * (j + n2 * (i))]/h ;
+//                ni[0 + n3 * (j + n2 * (i))] = -dt*fiz[0 + n3 * (j + n2 * (i))]/h ;
+//          }
+//         }
+//
+    for (int I = index_x; I < n1 * n2; I += stride_x) {
+        int j = I % n2;
+        int i = (I - j) / n2;
+        if (i * j == 0  || i >= imax+1 || j >= jmax+1) continue;
+            ne[0 + n3 * (j + n2 * (i))] = -dt*fez[0 + n3 * (j + n2 * (i))]/h ;
+            ni[0 + n3 * (j + n2 * (i))] = -dt*fiz[0 + n3 * (j + n2 * (i))]/h ;
+        }
+//################################################################################################
+//                                                                                               #
+//################################################################################################//        // BC on densities
+//// BC on densities
+//      //  for (int k=0; k<kmax; k++){
+//      //   for (int j=0; j<jmax+1; j++){
+//      //   ne[k + n3 * (j + n2 * (imax+1))]=ne[k + n3 * (j + n2 * (1))];
+//      //   ni[k + n3 * (j + n2 * (imax+1))]=ni[k + n3 * (j + n2 * (1))];
+//      //   ne[k + n3 * (jmax+1 + n2 * (j))]=ne[k + n3 * (1 + n2 * (j))];
+//      //   ni[k + n3 * (jmax+1 + n2 * (j))]=ni[k + n3 * (1 + n2 * (j))];
+//      //   ne[k + n3 * (j + n2 * (0))]=ne[k + n3 * (j + n2 * (imax))];
+//      //   ni[k + n3 * (j + n2 * (0))]=ni[k + n3 * (j + n2 * (imax))];
+//      //   ne[k + n3 * (0 + n2 * (j))]=ne[k + n3 * (jmax + n2 * (j))];
+//      //   ni[k + n3 * (0 + n2 * (j))]=ni[k + n3 * (jmax + n2 * (j))];
+//      //  }
+//      //}
+    for (int I = index_x; I < n2 * n3; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        if (j * k == 0  || j >= jmax+1 || k >= kmax) continue;
+        ne[I + n2 * n3 * (imax+1)]=ne[I + n2 * n3 * 1];
+        ni[I + n2 * n3 * (imax+1)]=ni[I + n2 * n3 * 1];
+        ne[I]=ne[I + n2 * n3 * imax];
+        ni[I]=ni[I + n2 * n3 * imax];
+        ne[k + n3 * (jmax+1 + n2 * (j))]=ne[k + n3 * (1 + n2 * (j))];
+        ni[k + n3 * (jmax+1 + n2 * (j))]=ni[k + n3 * (1 + n2 * (j))];
+        ne[k + n3 * (0 + n2 * (j))]=ne[k + n3 * (jmax + n2 * (j))];
+        ni[k + n3 * (0 + n2 * (j))]=ni[k + n3 * (jmax + n2 * (j))];
+    }
+//    //  for (int i=1; i<imax+1; i++){
+//    //     for (int j=1; j<jmax+1; j++){
+//    //     ne[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+//    //     ne[0 + n3 * (j + n2 * (i))]=0.0;
+//    //     ni[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+//    //     ni[0 + n3 * (j + n2 * (i))]=0.0;
+//    //    }
+//    //  }
+    for (int I = index_x; I <  n1 * n2; I += stride_x) {
+        int j = I % n2; 
+        int i = (I - j) / n2;                                                                                  
+        if (i * j == 0 || i >= imax+1 || j >= jmax+1) continue;
+        ne[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+        ne[0 + n3 * (j + n2 * (i))]=0.0;
+        ni[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+        ni[0 + n3 * (j + n2 * (i))]=0.0;
+    }
+//
+//        // calculating the loss
+//        //sf=0.0;
+//        //for (int k=1; k<kmax+1; k++) {
+//        //  for (int j=1; j<jmax+1; j++) {
+//        //   for (int i=1; i<imax+1;i++) {
+//        // sf=sf+ne[k + n3 * (j + n2 * (i))] ;
+//        //  }
+//        // }
+//        //}
+    sf=0.0;
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                  
+        if (i * j * k == 0 || i >= imax+1 || j >= jmax+1 || k >= kmax+1) continue;
+        sf=sf+ne[I] ;
+    }
+}
+
 void after(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int index_x = 0;
     int stride_x = 1;
@@ -873,6 +1348,412 @@ void after(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *
      //  }
 
 }
+
+__global__ void after_cu2(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+        if (i * j * k == 0 || i >= imax+1 || j >= jmax+1 || k >= kmax-1) continue;
+        Ex[I]= (V[I]-V[I + n2 * n3])/h;
+        Ey[I]= (V[I]-V[I + n3])/h;
+        difxne[I]=(ne[I + n2 * n3]-ne[I])/h;
+        difxni[I]=(ni[I + n2 * n3]-ni[I])/h;
+        difyne[I]=(ne[I + n3]-ne[I])/h;
+        difyni[I]=(ni[I + n3]-ni[I])/h;
+    }
+
+
+     //for (int k=0; k<kmax-1; k++) {
+     //   for (int i=1; i<imax+1;i++) {
+     //     for (int j=1; j<jmax+1;j++) {
+     //      Ez[k + n3 * (j + n2 * (i))]= (V[k + n3 * (j + n2 * (i))]-V[k+1 + n3 * (j + n2 * (i))])/h;
+     //      difzne[k + n3 * (j + n2 * (i))]=(ne[k+1 + n3 * (j + n2 * (i))]-ne[k + n3 * (j + n2 * (i))])/h;
+     //      difzni[k + n3 * (j + n2 * (i))]=(ni[k+1 + n3 * (j + n2 * (i))]-ni[k + n3 * (j + n2 * (i))])/h;
+     //     }
+     //   }
+     //}
+
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+        if (i * j== 0 || i >= imax+1 || j >= jmax+1 || k >= kmax-1) continue;
+        Ez[I]= (V[I]-V[I + 1])/h;
+        difzne[I]=(ne[I + 1]-ne[I])/h;
+        difzni[I]=(ni[I + 1]-ni[I])/h;
+    }
+
+// -----------------------------------------------------------------------------------------------
+       /* Since I am using mid points for Calculating electric field and density gradient,
+        to calculate Ex at any point that I don't have it directly, the average over
+        the neighboring points is used instead. these average variables are, exy, fexy, fixy, ...*/
+        // Calculating the average values of Ex and gradiant_x
+    //for (int k=1; k<kmax-1; k++) {
+    //  for (int i=2; i<imax+1;i++)   {
+    //   for (int j=1; j<jmax;j++) {
+    //    Exy[k + n3 * (j + n2 * (i))]= 0.25*(Ex[k + n3 * (j + n2 * (i))]+Ex[k + n3 * (j+1 + n2 * (i))]+Ex[k + n3 * (j + n2 * (i-1))]+Ex[k + n3 * (j+1 + n2 * (i-1))]) ;
+    //    difxyne[k + n3 * (j + n2 * (i))]=0.25*(difxne[k + n3 * (j + n2 * (i))]+difxne[k + n3 * (j+1 + n2 * (i))]+difxne[k + n3 * (j + n2 * (i-1))]+difxne[k + n3 * (j+1 + n2 * (i-1))]);
+    //    difxyni[k + n3 * (j + n2 * (i))]=0.25*(difxni[k + n3 * (j + n2 * (i))]+difxni[k + n3 * (j+1 + n2 * (i))]+difxni[k + n3 * (j + n2 * (i-1))]+difxni[k + n3 * (j+1 + n2 * (i-1))]);
+    //   }
+    //  }
+    //}
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+        if (j * k == 0 || i <= 1 || i >= imax+1 || j >= jmax || k >= kmax-1) continue;
+        Exy[I]= 0.25*(Ex[I]+Ex[I + n3]+Ex[I - n2 * n3]+Ex[I + n3 - n2 * n3]) ;
+        difxyne[I]=0.25*(difxne[I]+difxne[I + n3]+difxne[I - n2 * n3]+difxne[I + n3 - n2 * n3]);
+        difxyni[I]=0.25*(difxni[I]+difxni[ I + n3]+difxni[I - n2 * n3]+difxni[I + n3 - n2 * n3]);
+    }
+
+        // for (int k=1; k<kmax-1; k++) {
+        //   for (int j=1; j<jmax;j++) {
+        //    Exy[k + n3 * (j + n2 * (1))]= 0.25*(Ex[k + n3 * (j + n2 * (1))]+Ex[k + n3 * (j+1 + n2 * (1))]+Ex[k + n3 * (j + n2 * (imax))]+Ex[k + n3 * (j+1 + n2 * (imax))]) ;
+        //    difxyne[k + n3 * (j + n2 * (1))]=0.25*(difxne[k + n3 * (j + n2 * (1))]+difxne[k + n3 * (j+1 + n2 * (1))]+difxne[k + n3 * (j + n2 * (imax))]+difxne[k + n3 * (j+1 + n2 * (imax))]);
+        //    difxyni[k + n3 * (j + n2 * (1))]=0.25*(difxni[k + n3 * (j + n2 * (1))]+difxni[k + n3 * (j+1 + n2 * (1))]+difxni[k + n3 * (j + n2 * (imax))]+difxni[k + n3 * (j+1 + n2 * (imax))]);
+        //   }
+        //}
+    for (int I = index_x; I < n2 * n3; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        if (j * k == 0 || j >= jmax || k >= kmax-1) continue;
+        Exy[k + n3 * (j + n2 * (1))]= 0.25*(Ex[k + n3 * (j + n2 * (1))]+Ex[k + n3 * (j+1 + n2 * (1))]+Ex[k + n3 * (j + n2 * (imax))]+Ex[k + n3 * (j+1 + n2 * (imax))]) ;
+        difxyne[k + n3 * (j + n2 * (1))]=0.25*(difxne[k + n3 * (j + n2 * (1))]+difxne[k + n3 * (j+1 + n2 * (1))]+difxne[k + n3 * (j + n2 * (imax))]+difxne[k + n3 * (j+1 + n2 * (imax))]);
+        difxyni[k + n3 * (j + n2 * (1))]=0.25*(difxni[k + n3 * (j + n2 * (1))]+difxni[k + n3 * (j+1 + n2 * (1))]+difxni[k + n3 * (j + n2 * (imax))]+difxni[k + n3 * (j+1 + n2 * (imax))]);
+
+    }
+
+        //for (int k=1; k<kmax-1; k++) {
+        //  for (int i=2; i<imax;i++) {
+        //    Exy[k + n3 * (jmax + n2 * (i))]= 0.25*(Ex[k + n3 * (jmax + n2 * (i))]+Ex[k + n3 * (1 + n2 * (i))]+Ex[k + n3 * (jmax + n2 * (i-1))]+Ex[k + n3 * (1 + n2 * (i-1))]) ;
+        //    difxyne[k + n3 * (jmax + n2 * (i))]=0.25*(difxne[k + n3 * (jmax + n2 * (i))]+difxne[k + n3 * (1 + n2 * (i))]+difxne[k + n3 * (jmax + n2 * (i-1))]+difxne[k + n3 * (1 + n2 * (i-1))]);
+        //    difxyni[k + n3 * (jmax + n2 * (i))]=0.25*(difxni[k + n3 * (jmax + n2 * (i))]+difxni[k + n3 * (1 + n2 * (i))]+difxni[k + n3 * (jmax + n2 * (i-1))]+difxni[k + n3 * (1 + n2 * (i-1))]);
+        //   }
+        //  }
+    for (int I = index_x; I < n1 * n3; I += stride_x) {
+        int k = I % n3;
+        int i = (I - k) / n3;                                                                                  
+        if (k == 0 || i <= 1 || i >= imax ||  k >= kmax-1) continue;
+        difxyne[k + n3 * (jmax + n2 * (i))]=0.25*(difxne[k + n3 * (jmax + n2 * (i))]+difxne[k + n3 * (1 + n2 * (i))]+difxne[k + n3 * (jmax + n2 * (i-1))]+difxne[k + n3 * (1 + n2 * (i-1))]);
+        difxyni[k + n3 * (jmax + n2 * (i))]=0.25*(difxni[k + n3 * (jmax + n2 * (i))]+difxni[k + n3 * (1 + n2 * (i))]+difxni[k + n3 * (jmax + n2 * (i-1))]+difxni[k + n3 * (1 + n2 * (i-1))]);
+
+    }
+        // Calculating Exy and difxy at the corners
+      for (int k=1; k<kmax-1;k++) {
+        Exy[k + n3 * (jmax + n2 * (imax))]=(Ex[k + n3 * (jmax + n2 * (imax))]+Ex[k + n3 * (jmax + n2 * (imax-1))]+Ex[k + n3 * (1 + n2 * (imax-1))])/3.0;
+        difxyne[k + n3 * (jmax + n2 * (imax))]=(difxne[k + n3 * (jmax + n2 * (imax))]+difxne[k + n3 * (jmax + n2 * (imax-1))]+difxne[k + n3 * (1 + n2 * (imax-1))])/3.0;
+        difxyni[k + n3 * (jmax + n2 * (imax))]=(difxni[k + n3 * (jmax + n2 * (imax))]+difxni[k + n3 * (jmax + n2 * (imax-1))]+difxni[k + n3 * (1 + n2 * (imax-1))])/3.0;
+        Exy[k + n3 * (jmax + n2 * (1))]=(Ex[k + n3 * (jmax + n2 * (1))]+Ex[k + n3 * (jmax + n2 * (imax))]+Ex[k + n3 * (1 + n2 * (1))])/3.0;
+        difxyne[k + n3 * (jmax + n2 * (1))]=(difxne[k + n3 * (jmax + n2 * (1))]+difxne[k + n3 * (jmax + n2 * (imax))]+difxne[k + n3 * (1 + n2 * (1))])/3.0;
+        difxyni[k + n3 * (jmax + n2 * (1))]=(difxni[k + n3 * (jmax + n2 * (1))]+difxni[k + n3 * (jmax + n2 * (imax))]+difxni[k + n3 * (1 + n2 * (1))])/3.0;
+      }
+
+// -----------------------------------------------------------------------------------------------
+        // Here we calculate the fluxes in y direction
+        
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                      
+        if (i * j * k == 0 || i >= imax+1 || j >= jmax || k >= kmax-1) continue;
+        fey[I]= (-0.5*(ne[k + n3 * (j+1 + n2 * (i))]+ne[I])*mue*Ey[I]-dife*difyne[I]
+            -wce*q*0.5*(ne[k + n3 * (j+1 + n2 * (i))]+ne[I])*Exy[I]/(me*nue*nue)-wce*dife*difxyne[I]/nue)/denominator_e;
+        fiy[I]= (0.5*(ni[k + n3 * (j+1 + n2 * (i))]+ni[I])*mui*Ey[I]-difi*difyni[I]
+            -wci*q*0.5*(ni[k + n3 * (j+1 + n2 * (i))]+ni[I])*Exy[I]/(mi*nui*nui)+wci*difi*difxyni[I]/nui)/denominator_i;
+
+    } 
+       
+    for (int I = index_x; I < n1 * n3; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int i = s1 % n1; 
+        if (i * k == 0 || i >= imax+1 || k >= kmax-1) continue;
+        fey[I] = fey[I + jmax];
+        fiy[I] = fiy[I + jmax];
+    }
+
+// -----------------------------------------------------------------------------------------------
+        // Calculating the average Exy and difxy to be used in x direction fluxes
+       // Calculating the average values of Ey and gradiant_y
+       //for (int k=1; k<kmax-1; k++) {
+       //   for (int i=1; i<imax;i++)   {
+       //    for (int j=2; j<jmax+1;j++) {
+       //   Exy[k + n3 * (j + n2 * (i))]= 0.25*(Ey[k + n3 * (j + n2 * (i))]+Ey[k + n3 * (j-1 + n2 * (i))]+Ey[k + n3 * (j + n2 * (i+1))]+Ey[k + n3 * (j-1 + n2 * (i+1))]);
+       //   difxyne[k + n3 * (j + n2 * (i))]= 0.25*(difyne[k + n3 * (j + n2 * (i))]+difyne[k + n3 * (j-1 + n2 * (i))]+difyne[k + n3 * (j + n2 * (i+1))]+difyne[k + n3 * (j-1 + n2 * (i+1))]);
+       //   difxyni[k + n3 * (j + n2 * (i))]= 0.25*(difyni[k + n3 * (j + n2 * (i))]+difyni[k + n3 * (j-1 + n2 * (i))]+difyni[k + n3 * (j + n2 * (i+1))]+difyni[k + n3 * (j-1 + n2 * (i+1))]);
+       //  }
+       // }
+       //}
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                  
+        if (i * k == 0 || j < 2 || i >= imax+1 || j >= jmax || k >= kmax-1) continue;
+        Exy[I]= 0.25*(Ey[I]+Ey[I - n3]+Ey[I + n2 * n3]+Ey[I - n3 + n2 * n3]);
+        difxyne[I]= 0.25*(difyne[I]+difyne[I - n3]+difyne[I + n2 * n3]+difyne[I - n3 + n2 * n3]);
+        difxyni[I]= 0.25*(difyni[I]+difyni[I - n3]+difyni[I + n2 * n3]+difyni[I - n3 + n2 * n3]);
+
+    }
+       //for (int k=1; k<kmax-1; k++) {
+       //   for (int i=1; i<imax;i++)   {
+       //   Exy[k + n3 * (1 + n2 * (i))]= 0.25*(Ey[k + n3 * (1 + n2 * (i))]+Ey[k + n3 * (jmax + n2 * (i))]+Ey[k + n3 * (1 + n2 * (i+1))]+Ey[k + n3 * (jmax + n2 * (i+1))]);
+       //   difxyne[k + n3 * (1 + n2 * (i))]= 0.25*(difyne[k + n3 * (1 + n2 * (i))]+difyne[k + n3 * (jmax + n2 * (i))]+difyne[k + n3 * (1 + n2 * (i+1))]+difyne[k + n3 * (jmax + n2 * (i+1))]);
+       //   difxyni[k + n3 * (1 + n2 * (i))]= 0.25*(difyni[k + n3 * (1 + n2 * (i))]+difyni[k + n3 * (jmax + n2 * (i))]+difyni[k + n3 * (1 + n2 * (i+1))]+difyni[k + n3 * (jmax + n2 * (i+1))]);
+       //  }
+       // }
+    for (int I = index_x; I < n3 * n1; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int i = s1 % n1; 
+        if (i * k == 0 || i >= imax || k >= kmax-1) continue;
+        Exy[I + n3]= 0.25*(Ey[k + n3 * (1 + n2 * (i))]+Ey[k + n3 * (jmax + n2 * (i))]+Ey[k + n3 * (1 + n2 * (i+1))]+Ey[k + n3 * (jmax + n2 * (i+1))]);
+        difxyne[I + n3]= 0.25*(difyne[I + n3]+difyne[I + n3 * jmax]+difyne[I + n3 + n2*n3]+difyne[I + n3 * jmax + n2 * n3]);
+        difxyni[I + n3]= 0.25*(difyni[I + n3]+difyni[I + n3 * jmax]+difyni[I + n3 + n2*n3]+difyni[I + n3 * jmax + n2 * n3]);
+
+    }
+       // for (int k=1; k<kmax-1; k++) {
+       //    for (int j=2; j<jmax+1;j++) {
+       //   Exy[k + n3 * (j + n2 * (imax))]= 0.25*(Ey[k + n3 * (j + n2 * (imax))]+Ey[k + n3 * (j-1 + n2 * (imax))]+Ey[k + n3 * (j + n2 * (1))]+Ey[k + n3 * (j-1 + n2 * (1))]);
+       //   difxyne[k + n3 * (j + n2 * (imax))]= 0.25*(difyne[k + n3 * (j + n2 * (imax))]+difyne[k + n3 * (j-1 + n2 * (imax))]+difyne[k + n3 * (j + n2 * (1))]+difyne[k + n3 * (j-1 + n2 * (1))]);
+       //   difxyni[k + n3 * (j + n2 * (imax))]= 0.25*(difyni[k + n3 * (j + n2 * (imax))]+difyni[k + n3 * (j-1 + n2 * (imax))]+difyni[k + n3 * (j + n2 * (1))]+difyni[k + n3 * (j-1 + n2 * (1))]);
+       //  }
+       //}
+    for (int I = index_x; I < n3 * n2; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        if (j * k == 0 || j >= jmax+1 || k >= kmax-1) continue;
+        Exy[I + n2 * n3 * imax]= 0.25*(Ey[I + n2 * n3 * imax]+Ey[I - n3 + imax * n2 * n3]+Ey[k + n3 * (j + n2 * (1))]+Ey[k + n3 * (j-1 + n2 * (1))]);
+        difxyne[I + n2 * n3 * imax]= 0.25*(difyne[I + n2 * n3 * imax]+difyne[I - n3 + imax * n2 * n3]+difyne[I + n2 * n3]+difyne[I - n2 + n2 * n3]);
+        difxyni[I + n2 * n3 * imax]= 0.25*(difyni[I + n2 * n3 * imax]+difyni[I - n3 + imax * n2 * n3]+difyni[I + n2 * n3]+difyni[I - n2 + n2 * n3]);
+}
+        // Calculating Exy and difxy at the corners
+       //for (int k=1; k<kmax-1; k++) {
+       // Exy[k + n3 * (1 + n2 * (imax))]=(Ey[k + n3 * (1 + n2 * (imax))]+Ey[k + n3 * (1 + n2 * (1))]+Ey[k + n3 * (jmax + n2 * (imax))])/3.0;
+       // difxyne[k + n3 * (1 + n2 * (imax))]=(difyne[k + n3 * (1 + n2 * (imax))]+difyne[k + n3 * (1 + n2 * (1))]+difyne[k + n3 * (jmax + n2 * (imax))])/3.0;
+       // difxyni[k + n3 * (1 + n2 * (imax))]=(difyni[k + n3 * (1 + n2 * (imax))]+difyni[k + n3 * (1 + n2 * (1))]+difyni[k + n3 * (jmax + n2 * (imax))])/3.0;
+       // Exy[k + n3 * (jmax + n2 * (imax))]=(Ey[k + n3 * (jmax-1 + n2 * (imax))]+Ey[k + n3 * (jmax + n2 * (imax))]+Ey[k + n3 * (jmax-1 + n2 * (1))])/3.0;
+       // difxyne[k + n3 * (jmax + n2 * (imax))]=(difyne[k + n3 * (jmax-1 + n2 * (imax))]+difyne[k + n3 * (jmax + n2 * (imax))]+difyne[k + n3 * (jmax-1 + n2 * (1))])/3.0;
+       // difxyni[k + n3 * (jmax + n2 * (imax))]=(difyni[k + n3 * (jmax-1 + n2 * (imax))]+difyni[k + n3 * (jmax + n2 * (imax))]+difyni[k + n3 * (jmax-1 + n2 * (1))])/3.0;
+       //}
+    for (int I = index_x; I < kmax-1; I += stride_x) {
+        if (I == 0) continue;
+        Exy[I + n3 * (1 + n2 * (imax))]=(Ey[I + n3 * (1 + n2 * (imax))]+Ey[I + n3 * (1 + n2 * (1))]+Ey[I + n3 * (jmax + n2 * (imax))])/3.0;
+        difxyne[I + n3 * (1 + n2 * (imax))]=(difyne[I + n3 * (1 + n2 * (imax))]+difyne[I + n3 * (1 + n2 * (1))]+difyne[I + n3 * (jmax + n2 * (imax))])/3.0;
+        difxyni[I + n3 * (1 + n2 * (imax))]=(difyni[I + n3 * (1 + n2 * (imax))]+difyni[I + n3 * (1 + n2 * (1))]+difyni[I + n3 * (jmax + n2 * (imax))])/3.0;
+        Exy[I + n3 * (jmax + n2 * (imax))]=(Ey[I + n3 * (jmax-1 + n2 * (imax))]+Ey[I + n3 * (jmax + n2 * (imax))]+Ey[I + n3 * (jmax-1 + n2 * (1))])/3.0;
+        difxyne[I + n3 * (jmax + n2 * (imax))]=(difyne[I + n3 * (jmax-1 + n2 * (imax))]+difyne[I + n3 * (jmax + n2 * (imax))]+difyne[I + n3 * (jmax-1 + n2 * (1))])/3.0;
+        difxyni[I + n3 * (jmax + n2 * (imax))]=(difyni[I + n3 * (jmax-1 + n2 * (imax))]+difyni[I + n3 * (jmax + n2 * (imax))]+difyni[I + n3 * (jmax-1 + n2 * (1))])/3.0;
+    }
+
+// -----------------------------------------------------------------------------------------------
+        // Now ready to calculate the fluxes in x direction
+       //for (int k=1; k<kmax-1; k++) {
+       // for (int j=1; j<jmax+1; j++) {
+       //  for (int i=1; i<imax+1;i++) {
+       //   fex[k + n3 * (j + n2 * (i))]=(-0.5*(ne[k + n3 * (j + n2 * (i))]+ne[k + n3 * (j + n2 * (i+1))])*mue*Ex[k + n3 * (j + n2 * (i))]-dife*difxne[k + n3 * (j + n2 * (i))]
+       //   +wce*dife*difxyne[k + n3 * (j + n2 * (i))]/nue+wce*q*0.5*(ne[k + n3 * (j + n2 * (i))]+ne[k + n3 * (j + n2 * (i+1))])/(me*nue*nue)*Exy[k + n3 * (j + n2 * (i))])/denominator_e;
+       //   fix[k + n3 * (j + n2 * (i))]=(0.5*(ni[k + n3 * (j + n2 * (i))]+ni[k + n3 * (j + n2 * (i+1))])*mui*Ex[k + n3 * (j + n2 * (i))]-difi*difxni[k + n3 * (j + n2 * (i))]
+       //   -wci*difi*difxyni[k + n3 * (j + n2 * (i))]/nui+wci*q*0.5*(ni[k + n3 * (j + n2 * (i))]+ni[k + n3 * (j + n2 * (i+1))])*Exy[k + n3 * (j + n2 * (i))]/(mi*nui*nui))/denominator_i;
+       //  }
+       // }
+       //}
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                  
+        if (i * j * k == 0 || i >= imax+1 || j >= jmax || k >= kmax-1) continue;
+        fex[I]=(-0.5*(ne[I]+ne[I + n2 * n3])*mue*Ex[I]-dife*difxne[I]
+        +wce*dife*difxyne[I]/nue+wce*q*0.5*(ne[I]+ne[I + n2 * n3])/(me*nue*nue)*Exy[I])/denominator_e;
+        fix[I]=(0.5*(ni[I]+ni[I + n2 * n3])*mui*Ex[I]-difi*difxni[I]
+        -wci*difi*difxyni[I]/nui+wci*q*0.5*(ni[I]+ni[I + n2 * n3])*Exy[I]/(mi*nui*nui))/denominator_i;
+    }
+      //for (int k=1; k<kmax-1; k++) {
+      //  for (int j=1; j<jmax+1; j++) {
+      //    fex[k + n3 * (j + n2 * (0))] = fex[k + n3 * (j + n2 * (imax))];
+      //    fix[k + n3 * (j + n2 * (0))] = fix[k + n3 * (j + n2 * (imax))];
+      //  }
+      // }
+    for (int I = index_x; I < n3 * n2; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        if (j * k == 0 || j >= jmax || k >= kmax-1) continue;
+        fex[I] = fex[I + n2 * n3 * imax];
+        fix[I] = fix[I + n2 * n3 * imax];
+    }
+
+// -----------------------------------------------------------------------------------------------
+        // Now we calculate the fluxes in z direction
+       //for (int k=0; k<kmax-1; k++) {
+       // for (int j=1; j<jmax+1; j++) {
+       //  for (int i=1; i<imax+1;i++) {
+       //   fez[k + n3 * (j + n2 * (i))]=-0.5*(ne[k + n3 * (j + n2 * (i))]+ne[k+1 + n3 * (j + n2 * (i))])*mue*Ez[k + n3 * (j + n2 * (i))]-dife*difzne[k + n3 * (j + n2 * (i))];
+       //   fiz[k + n3 * (j + n2 * (i))]=0.5*(ni[k + n3 * (j + n2 * (i))]+ni[k+1 + n3 * (j + n2 * (i))])*mui*Ez[k + n3 * (j + n2 * (i))]-difi*difzni[k + n3 * (j + n2 * (i))];
+       //  }
+       // }
+       //}
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                  
+        if (i * j == 0 || i >= imax+1 || j >= jmax + 1 || k >= kmax-1) continue;
+        fez[I]=-0.5*(ne[I]+ne[I + 1])*mue*Ez[I]-dife*difzne[I];
+        fiz[I]=0.5*(ni[I]+ni[I + 1])*mui*Ez[I]-difi*difzni[I];
+
+    }
+       // BC on fluxes
+     //  for (int i=1; i<imax+1; i++) {
+     //   for (int j=1; j<jmax+1; j++) {
+     //      if (fez[1 + n3 * (j + n2 * (i))]>0.0){
+     //       fez[1 + n3 * (j + n2 * (i))]=0.0;
+     //      }
+     //      if (fiz[1 + n3 * (j + n2 * (i))]>0.0){
+     //       fiz[1 + n3 * (j + n2 * (i))]=0.0;
+     //      }
+     //      if (fez[kmax-1 + n3 * (j + n2 * (i))]<0.0){
+     //       fez[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+     //      }
+     //      if (fiz[kmax-1 + n3 * (j + n2 * (i))]<0.0){
+     //       fiz[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+     //      }
+     //   }
+     // }
+    for (int I = index_x; I < n1 * n2; I += stride_x) {
+        int j = I % n2; 
+        int i = (I - j) / n2;                                                                                  
+        if (i * j == 0 || i >= imax+1 || j >= jmax+1) continue;
+        if (fez[I + 1]>0.0){
+            fez[I + 1]=0.0;
+        }
+        if (fiz[I + 1]>0.0){
+            fiz[I + 1]=0.0;
+        }
+        if (fez[I + kmax - 1]<0.0){
+            fez[I + kmax - 1]=0.0;
+        }
+        if (fiz[I + kmax - 1]<0.0){
+            fiz[I + kmax - 1]=0.0;
+        }
+    }
+
+//// -----------------------------------------------------------------------------------------------
+        // for (int k=1; k<kmax; k++) {
+        //  for (int j=1; j<jmax+1; j++) {
+        //   for (int i=1; i<imax+1;i++) {
+        // ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]-dt*(fex[k + n3 * (j + n2 * (i))]-fex[k + n3 * (j + n2 * (i-1))]+fey[k + n3 * (j + n2 * (i))]-fey[k + n3 * (j-1 + n2 * (i))]+fez[k + n3 * (j + n2 * (i))]-fez[k-1 + n3 * (j + n2 * (i))])/h ;
+        // ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]-dt*(fix[k + n3 * (j + n2 * (i))]-fix[k + n3 * (j + n2 * (i-1))]+fiy[k + n3 * (j + n2 * (i))]-fiy[k + n3 * (j-1 + n2 * (i))]+fiz[k + n3 * (j + n2 * (i))]-fiz[k-1 + n3 * (j + n2 * (i))])/h ;
+        //  }
+        // }
+        //}
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                  
+        if (i * j * k == 0 || i >= imax+1 || j >= jmax+1 || k >= kmax) continue;
+            ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]-dt*(fex[k + n3 * (j + n2 * (i))]-fex[k + n3 * (j + n2 * (i-1))]+fey[k + n3 * (j + n2 * (i))]-fey[k + n3 * (j-1 + n2 * (i))]+fez[k + n3 * (j + n2 * (i))]-fez[k-1 + n3 * (j + n2 * (i))])/h ;
+                     ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]-dt*(fix[k + n3 * (j + n2 * (i))]-fix[k + n3 * (j + n2 * (i-1))]+fiy[k + n3 * (j + n2 * (i))]-fiy[k + n3 * (j-1 + n2 * (i))]+fiz[k + n3 * (j + n2 * (i))]-fiz[k-1 + n3 * (j + n2 * (i))])/h ;
+        }
+//################################################################################################
+//                                                                                               #
+//################################################################################################
+//    for (int j=1; j<jmax+1; j++) {
+//           for (int i=1; i<imax+1;i++) {
+//                ne[0 + n3 * (j + n2 * (i))] = -dt*fez[0 + n3 * (j + n2 * (i))]/h ;
+//                ni[0 + n3 * (j + n2 * (i))] = -dt*fiz[0 + n3 * (j + n2 * (i))]/h ;
+//          }
+//         }
+//
+    for (int I = index_x; I < n1 * n2; I += stride_x) {
+        int j = I % n2;
+        int i = (I - j) / n2;
+        if (i * j == 0  || i >= imax+1 || j >= jmax+1) continue;
+            ne[0 + n3 * (j + n2 * (i))] = -dt*fez[0 + n3 * (j + n2 * (i))]/h ;
+            ni[0 + n3 * (j + n2 * (i))] = -dt*fiz[0 + n3 * (j + n2 * (i))]/h ;
+        }
+//################################################################################################
+//                                                                                               #
+//################################################################################################//        // BC on densities
+//// BC on densities
+//      //  for (int k=0; k<kmax; k++){
+//      //   for (int j=0; j<jmax+1; j++){
+//      //   ne[k + n3 * (j + n2 * (imax+1))]=ne[k + n3 * (j + n2 * (1))];
+//      //   ni[k + n3 * (j + n2 * (imax+1))]=ni[k + n3 * (j + n2 * (1))];
+//      //   ne[k + n3 * (jmax+1 + n2 * (j))]=ne[k + n3 * (1 + n2 * (j))];
+//      //   ni[k + n3 * (jmax+1 + n2 * (j))]=ni[k + n3 * (1 + n2 * (j))];
+//      //   ne[k + n3 * (j + n2 * (0))]=ne[k + n3 * (j + n2 * (imax))];
+//      //   ni[k + n3 * (j + n2 * (0))]=ni[k + n3 * (j + n2 * (imax))];
+//      //   ne[k + n3 * (0 + n2 * (j))]=ne[k + n3 * (jmax + n2 * (j))];
+//      //   ni[k + n3 * (0 + n2 * (j))]=ni[k + n3 * (jmax + n2 * (j))];
+//      //  }
+//      //}
+    for (int I = index_x; I < n2 * n3; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        if (j * k == 0  || j >= jmax+1 || k >= kmax) continue;
+        ne[I + n2 * n3 * (imax+1)]=ne[I + n2 * n3 * 1];
+        ni[I + n2 * n3 * (imax+1)]=ni[I + n2 * n3 * 1];
+        ne[I]=ne[I + n2 * n3 * imax];
+        ni[I]=ni[I + n2 * n3 * imax];
+        ne[k + n3 * (jmax+1 + n2 * (j))]=ne[k + n3 * (1 + n2 * (j))];
+        ni[k + n3 * (jmax+1 + n2 * (j))]=ni[k + n3 * (1 + n2 * (j))];
+        ne[k + n3 * (0 + n2 * (j))]=ne[k + n3 * (jmax + n2 * (j))];
+        ni[k + n3 * (0 + n2 * (j))]=ni[k + n3 * (jmax + n2 * (j))];
+    }
+//    //  for (int i=1; i<imax+1; i++){
+//    //     for (int j=1; j<jmax+1; j++){
+//    //     ne[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+//    //     ne[0 + n3 * (j + n2 * (i))]=0.0;
+//    //     ni[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+//    //     ni[0 + n3 * (j + n2 * (i))]=0.0;
+//    //    }
+//    //  }
+    for (int I = index_x; I <  n1 * n2; I += stride_x) {
+        int j = I % n2; 
+        int i = (I - j) / n2;                                                                                  
+        if (i * j == 0 || i >= imax+1 || j >= jmax+1) continue;
+        ne[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+        ne[0 + n3 * (j + n2 * (i))]=0.0;
+        ni[kmax-1 + n3 * (j + n2 * (i))]=0.0;
+        ni[0 + n3 * (j + n2 * (i))]=0.0;
+    }
+//
+//        // calculating the loss
+//        //sf=0.0;
+//        //for (int k=1; k<kmax+1; k++) {
+//        //  for (int j=1; j<jmax+1; j++) {
+//        //   for (int i=1; i<imax+1;i++) {
+//        // sf=sf+ne[k + n3 * (j + n2 * (i))] ;
+//        //  }
+//        // }
+//        //}
+    sf=0.0;
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2; 
+        int i = (s1 - j) / n2;                                                                                  
+        if (i * j * k == 0 || i >= imax+1 || j >= jmax+1 || k >= kmax+1) continue;
+        sf=sf+ne[I] ;
+    }
+    }
 
 __global__ void after_cu(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
@@ -1216,50 +2097,68 @@ __global__ void after_cu(int imax, int jmax, int kmax, int tmax, float *ne, floa
 void mardas(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
-float** kernel = create_kernel(imax, jmax, kmax, w);
-sparseMat* sp = dense_to_sparse(N, kernel);
-float** A;
-float** BB;
-float** holder1;
-float* holder2;
-cudaMallocManaged(&(A ), N*sizeof(A));
-cudaMallocManaged(&(BB ), N*sizeof(BB));
-cudaMallocManaged(&(holder1 ), N*sizeof(holder1));
-cudaMallocManaged(&(holder2 ), N*sizeof(holder2));
-for (int i=0; i<N; i++) {
-    //cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
-    cudaMallocManaged(&(A[i] ), N*sizeof(A[i]));
-    cudaMallocManaged(&(BB[i] ), N*sizeof(BB[i]));
-    cudaMallocManaged(&(holder1[i] ), N*sizeof(holder1[i]));
-}
 int iterations = 40;
-//sparseMats* AB = createAB(N, kernel, iterations, A, BB, holder1);
-sparseMats* AB = readAB(n1, n2, n3, iterations, A, BB);
+
+//float** kernel;
+//kernel = create_kernel(imax, jmax, kmax, w);
+//sparseMat* sp = dense_to_sparse(N, kernel);
+//float** A;
+//float** BB;
+//float** holder1;
+//float* holder2;
+//cudaMallocManaged(&(A ), N*sizeof(A));
+//cudaMallocManaged(&(BB ), N*sizeof(BB));
+//cudaMallocManaged(&(holder1 ), N*sizeof(holder1));
+//cudaMallocManaged(&(holder2 ), N*sizeof(holder2));
+//for (int i=0; i<N; i++) {
+//    //cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
+//    cudaMallocManaged(&(A[i] ), N*sizeof(A[i]));
+//    cudaMallocManaged(&(BB[i] ), N*sizeof(BB[i]));
+//    cudaMallocManaged(&(holder1[i] ), N*sizeof(holder1[i]));
+//}
+////sparseMats* AB = createAB(N, kernel, iterations, A, BB, holder1);
+//sparseMats* AB;
+//AB = readAB(n1, n2, n3, iterations, A, BB);
 
 double begin = clock();
 for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime evolution
      fuckingCount = 0;
      printf("%d\n", myTime);
 
-    before_cu<<<N, 1>>>(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+    //before_cu<<<256, N/256>>>(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+    //cudaDeviceSynchronize();
+    before(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
 
-    //poisson_solve(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
+    poisson_solve(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
+    //poisson_solve_cu<<<N, 1>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
+    //cudaDeviceSynchronize();
     //poisson_solve2(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, sp, kernel);
-    poisson_solve3_cu<<<N, 1>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, AB, holder2);
+    //special_cu<<<N, 1>>>(N, AB->A->indices, AB->A->values, AB->A->sizes, V, AB->B->indices, AB->B->values, AB->B->sizes, g_temp, R); 
+    //cudaDeviceSynchronize();
+    //poisson_solve3(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, AB, holder2);
+    //poisson_solve3_cu<<<N, 1>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, AB, holder2); cudaDeviceSynchronize();
+
+    //for (kk=0; kk<iterations; kk++) {
+    //    poisson_solve_1it_even_cu<<<256, N/256>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
+    //    poisson_solve_1it_odd_cu<<<256, N/256>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
+    //}
+    //cudaDeviceSynchronize();
+
+    //after_cu2<<<256, N/256>>>(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi); 
+    //cudaDeviceSynchronize();
+    after2(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
 
 
-    after_cu<<<N, 1>>>(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
-
-
+    //cudaDeviceSynchronize();
      }
-    cudaDeviceSynchronize();
+    //cudaDeviceSynchronize();
     double time_spent1 = (clock() - begin) / CLOCKS_PER_SEC;
     printf("Time spent without parallelization: %f\n", time_spent1);
 }
 
 int main()
 {
-int imax = 16, jmax = 16, kmax = 16,i,j,k;
+int imax = 32, jmax = 32, kmax = 64,i,j,k;
 int n1 = imax+3, n2 = jmax+3, n3 = kmax+3;
 float qi=1.6E-19,qe=-1.6E-19, kr = 0,ki = 0,si = 0,sf = 0,alpha = 0, q=1.6E-19,pie=3.14159,Ta,w,eps0,Te,Ti,B,Kb,me,mi,nue,nui,denominator_e,denominator_i,nn,dt,h,wce,wci,mue,mui,dife,difi;
 int tmax = 200;
