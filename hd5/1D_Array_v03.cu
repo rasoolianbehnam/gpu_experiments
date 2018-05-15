@@ -5,456 +5,6 @@
 #include <stdlib.h>
 #include <math.h>
 
-#define my_index 3
-
-typedef struct {
-    float **A;
-    float **B;
-} Mats;
-
-typedef struct {
-    float **indices;
-    float **values;
-    int *sizes;
-} sparseMat;
-
-typedef struct {
-    sparseMat *A;
-    sparseMat *B;
-} sparseMats;
-
-typedef struct {
-    float *array;
-    size_t used;
-    size_t size;
-} Array;
-float rel_error(int n, float *a, float *b) {
-    float max_diff = -100000;
-    float tmp, tmp1, tmp2, sum;
-    for (int i=0; i < n; i++) {
-        tmp = a[i] - b[i];
-        if (tmp < 0) tmp = -tmp;
-
-        tmp1 = a[i];
-        tmp2 = b[i];
-        if (tmp1 < 0) tmp1 = -tmp1;
-        if (tmp2 < 0) tmp2 = -tmp2;
-        sum = tmp1 + tmp1;
-        if (sum < 1e-8) sum=1e-8;
-        if (tmp / sum > max_diff) max_diff=tmp/sum;
-    }
-    return max_diff;
-}
-float sum(int n, float *a) {
-    float s = 0;
-    for (int i=0; i<n; i++) {
-        s += a[i];
-    }
-    return s;
-}
-float sum2(int n, float **a) {
-    float s = 0;
-    for (int i=0; i<n; i++) {
-        for (int j=0; j<n; j++) {
-            s += a[i][j];
-        }
-    }
-    return s;
-}
-void initArray(Array *a, size_t initialSize) {
-    cudaMallocManaged(&(a->array ), initialSize * sizeof(float));
-    //cudaMallocManaged(&(a->array), initialSize * sizeof(float));
-    a->used = 0;
-    a->size = initialSize;
-}
-
-
-void insertArray(Array *a, float element) {
-    // a->used is the number of used entries, 
-    //because a->array[a->used++] updates a->used 
-    //only *after* the array has been accessed.
-    // Therefore a->used can go up to a->size 
-    if (a->used == a->size) {
-        printf("reallocating\n");
-        a->size *= 2;
-        a->array = (float *)realloc(a->array, a->size * sizeof(float));
-    }
-    a->array[a->used++] = element;
-}
-void freeArray(Array *a) {
-    free(a->array);
-    a->array = NULL;
-    a->used = a->size = 0;
-}
-
-void square_matrix_to_sparse(int N, float **mat, Array **indices, Array **values) {
-    for (int i=0; i<N;i++){
-        for(int j=0;j<N;j++) {
-            if (mat[i][j]) {
-                insertArray(indices[i], (float) j);
-                insertArray(values[i], mat[i][j]);
-            }
-        }
-    }
-}
-
-void mat_dot_vec(int N, float **I_kernel, float *V, float *R) {
-    for (int i=0; i < N; i++) {
-        R[i] = 0;
-        for (int j=0; j < N; j++) {
-            R[i] += I_kernel[i][j]*V[j];
-        }
-    }
-}
-
-void mat_dot_mat(int N, float **I_kernel, float **V, float **R) {
-    for (int i=0; i < N; i++) {
-        for (int j=0; j < N; j++) {
-            R[i][j] = 0;
-            for (int k=0; k < N; k++) R[i][j] += I_kernel[i][k]*V[k][j];
-        }
-    }
-}
-
-__global__ void mat_dot_mat_cu(int N, float **I_kernel, float **V, float **R) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-    for (int i=index_x; i < N; i+=stride_x) {
-        for (int j=0; j < N; j++) {
-            R[i][j] = 0;
-            for (int k=0; k < N; k++) R[i][j] += I_kernel[i][k]*V[k][j];
-        }
-    }
-}
-
-void mat_add_mat(int N, float **I_kernel, float **V, float **R) {
-    for (int i=0; i < N; i++) {
-        for (int j=0; j < N; j++) {
-            R[i][j] = I_kernel[i][j]+V[i][j];
-        }
-    }
-}
-
-__global__ void vec_min_vec_cu(int N, float *I_kernel, float *V, float *R) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-    for (int i=index_x; i < N; i+=stride_x) {
-        R[i] = I_kernel[i]-V[i];
-    }
-}
-
-void vec_min_vec(int N, float *I_kernel, float *V, float *R) {
-    for (int i=0; i < N; i++) {
-        R[i] = I_kernel[i]-V[i];
-    }
-}
-
-void array_dot_vec(int N, float **indices, float **values, int *sizes, float *V, float *R) {
-    for (int i=0; i < N; i+=1) {
-        R[i] = 0;
-        for (int j=0; j < sizes[i]; j+=1) {
-             R[i] += values[i][j] * V[(int)indices[i][j]];
-        }
-    }
-}
-
-__global__ void array_dot_vec_cu(int N, float **indices, float **values, int *sizes, float *V, float *R) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-    for (int i=index_x; i < N; i+=stride_x) {
-        R[i] = 0;
-        for (int j=0; j < sizes[i]; j+=1) {
-            R[i] += values[i][j] * V[(int)indices[i][j]];
-        }
-    }
-}
-
-void special(int N, float **indices1, float **values1, int *sizes1, float *V,  float **indices2, float **values2, int *sizes2, float *g, float *R) {
-    for (int i=0; i < N; i+=1) {
-        R[i] = 0;
-        for (int j=0; j < sizes1[i]; j+=1) {
-            R[i] += values1[i][j] * V[(int)indices1[i][j]];
-        }
-        for (int j=0; j < sizes2[i]; j+=1) {
-            R[i] -= values2[i][j] * g[(int)indices2[i][j]];
-        }
-    }
-    for (int i=0; i < N; i+=1) {
-        V[i] = R[i];
-    }
-}
-__global__ void special_cu(int N, float **indices1, float **values1, int *sizes1, float *V,  float **indices2, float **values2, int *sizes2, float *g, float *R) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-    for (int i=index_x; i < N; i+=stride_x) {
-        R[i] = 0;
-        for (int j=0; j < sizes1[i]; j+=1) {
-            R[i] += values1[i][j] * V[(int)indices1[i][j]];
-        }
-        for (int j=0; j < sizes2[i]; j+=1) {
-            R[i] -= values2[i][j] * g[(int)indices2[i][j]];
-        }
-    }
-    for (int i=index_x; i < N; i+=stride_x) {
-        V[i] = R[i];
-    }
-}
-float** create_kernel(int imax, int jmax, int kmax, float w) {
-    int n1 = imax+3;
-    int n2 = jmax+3;
-    int n3 = kmax+3;
-    int N = n1*n2*n3;
-    float **my_mat;
-    //cudaMallocManaged(&my_mat, N*sizeof(my_mat));
-    cudaMallocManaged(&(my_mat ), N*sizeof(my_mat));
-    for (int i=0; i<N; i++) {
-        //cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
-        cudaMallocManaged(&(my_mat[i] ), N*sizeof(my_mat[i]));
-    }
-    for (int I=0; I<N; I++) {
-        for (int J=0; J<N; J++) my_mat[I][J] = 0;
-        int k = I % n3;
-        int s1 = (I - k) / n3;
-        int j = s1 % n2;
-        int i = (s1 - j) / n2;
-        if (I % 1000 == 0) printf("%4d / %d\n", I, N);
-        if (i >= 1 && i < imax-1 
-                && j >= 1 && j < jmax-1 
-                && k >= 1 && k < kmax-1) {
-            for (int J=0; J<N; J++)  {
-                my_mat[I][J] = w / 6. *
-                (my_mat[I-n2*n3][J] +
-                 my_mat[I-n2][J] +
-                 my_mat[I-1][J]);
-            }
-            my_mat[I][I+1]     += w / 6.;
-            my_mat[I][I+n3]    += w / 6.;
-            my_mat[I][I+n2*n3] += w / 6.;
-            my_mat[I][I]       += 1 - w;
-        }
-        else
-            my_mat[I][I] += 1;
-
-    }
-    printf("w = %f\n", w);
-    printf("sum of kernel: %f\n", sum2(N, my_mat));
-    return my_mat;
-}
-
-
-
-sparseMat* dense_to_sparse(int N, float** my_mat) {
-    Array **indices;
-    Array **values;
-    cudaMallocManaged(&(indices), N * sizeof(indices));
-    cudaMallocManaged(&(values), N * sizeof(values));
-    for (int i=0; i < N; i++) {
-        cudaMallocManaged(&(indices[i]), sizeof(indices[i]));
-        cudaMallocManaged(&(values[i]), sizeof(values[i]));
-        initArray(indices[i], N);
-        initArray(values[i], N);
-    }
-    //Converting normal matrix to sparse
-    //the result would be three arrays
-    // indices, values and sizes
-    square_matrix_to_sparse(N, my_mat, indices, values);
-    float **indices_t;
-    float **values_t;
-    int *sizes_t;
-    //cudaMallocManaged(&indices_t, N*sizeof(indices_t));
-    //cudaMallocManaged(&values_t, N*sizeof(values_t));
-    //cudaMallocManaged(&size_t, N*sizeof(size_t));
-    cudaMallocManaged(&(indices_t ), N*sizeof(indices_t));
-    cudaMallocManaged(&(values_t ), N*sizeof(values_t));
-    cudaMallocManaged(&(sizes_t ), N*sizeof(values_t));
-    for (int i=0; i<N; i++) {
-        sizes_t[i] = indices[i]->used;
-        //cudaMallocManaged(&indices_t[i], size_t[i]*sizeof(indices_t[i]));
-        //cudaMallocManaged(&values_t[i], size_t[i]*sizeof(values_t[i]));
-        cudaMallocManaged(&(indices_t[i] ), sizes_t[i]*sizeof(indices_t[i]));
-        cudaMallocManaged(&(values_t[i] ), sizes_t[i]*sizeof(values_t[i]));
-        for (int j=0; j<sizes_t[i]; j++) {
-            indices_t[i][j] = indices[i]->array[j];
-            values_t[i][j] = values[i]->array[j];
-        }
-    }
-    sparseMat *sp;
-    cudaMallocManaged(&sp, sizeof(sp));
-    sp->indices=indices_t;
-    sp->values=values_t;
-    sp->sizes=sizes_t;
-    return sp;
-}
-
-sparseMats* createAB(int N, float **kernel, int iterations, float **A, float **B, float **holder1) {
-    for (int i=0; i<N; i++) {
-        for (int j=0; j<N; j++) {
-            A[i][j] = kernel[i][j];
-            B[i][j] = 0;
-            if (i==j) B[i][j] = 1;
-        }
-    }
-    for (int kk=0; kk < iterations-1; kk++) {
-        printf("iteration %d\n", kk);
-        mat_add_mat(N, B, A, B);
-        //mat_dot_mat(N, kernel, A, holder1);
-        mat_dot_mat_cu<<<N, 1>>>(N, kernel, A, holder1); cudaDeviceSynchronize();
-        float **tmp = holder1;
-        holder1 = A;
-        A = tmp;
-    }
-    sparseMats *AB;
-    cudaMallocManaged(&AB, sizeof(AB));
-    AB->A = dense_to_sparse(N, A);
-    AB->B = dense_to_sparse(N, B);
-    printf("sum of A: %f", sum2(N, A));
-    return AB;
-}
-
-sparseMats* readAB(int n1, int n2, int n3, int iterations, float **A, float **B) {
-    char* file_name;
-    file_name = (char *) malloc(20*sizeof(file_name));
-    sprintf(file_name, "A_%d_%d_%d_%d.txt", n1, n2, n3, iterations);
-    printf("file name: %s\n", file_name);
-    FILE *fp = fopen(file_name, "r");
-    const char s[2] = " ";
-    char *token;
-    int i;
-    int r, k;
-    float val;
-    float sumA = 0;
-    if(fp != NULL) {
-        char line[20];
-        while(fgets(line, sizeof line, fp) != NULL) {
-            token = strtok(line, s);
-            r = atof(token);
-            //printf("%d ",r);
-            token = strtok(NULL,s);
-            k = atof(token);
-            //printf("%d ",k);
-            token = strtok(NULL,s);
-            val = atof(token);
-            //printf("%f\n",val);
-            A[r][k] = val;
-            sumA += A[r][k];
-        }
-        fclose(fp);
-    } else {
-        perror(file_name);
-    } 
-
-    sprintf(file_name, "B_%d_%d_%d_%d.txt", n1, n2, n3, iterations);
-    printf("file name: %s\n", file_name);
-    fp = fopen(file_name, "r");
-    float sumB = 0;
-    if(fp != NULL) {
-        char line[20];
-        while(fgets(line, sizeof line, fp) != NULL) {
-            token = strtok(line, s);
-            r = atof(token);
-            //printf("%d ",r);
-            token = strtok(NULL,s);
-            k = atof(token);
-            //printf("%d ",k);
-            token = strtok(NULL,s);
-            val = atof(token);
-            //printf("%f\n",val);
-            B[r][k] = val;
-            sumB += B[r][k];
-        }
-        fclose(fp);
-    } else {
-        perror(file_name);
-    } 
-
-    sparseMats *AB;
-    cudaMallocManaged(&AB, sizeof(AB));
-    AB->A = dense_to_sparse(n1*n2*n3, A);
-    AB->B = dense_to_sparse(n1*n2*n3, B);
-    printf("Sum of A: %f\n", sumA);
-    printf("Sum of B: %f\n", sumB);
-    return AB;
-}
-void poisson_solve3(int imax, int jmax, int kmax, 
-    int n1, int n2, int n3, int N, int iterations, 
-    float* V, float* g, float* g_temp, float *R, float w,
-    float h, sparseMats* AB, float* holder) {
-
-
-        //array_dot_vec(N, AB->A->indices, AB->A->values, AB->A->sizes, V, R);
-        //array_dot_vec_cu<<<1024, 1024>>>(N, AB->A->indices, AB->A->values, AB->A->sizes, V, R); cudaDeviceSynchronize();
-        //array_dot_vec(N, AB->B->indices, AB->B->values, AB->B->sizes, g_temp, holder);
-        //array_dot_vec_cu<<<1024, 1024>>>(N, AB->B->indices, AB->B->values, AB->B->sizes, g_temp, holder); cudaDeviceSynchronize();
-        //vec_min_vec(N, R, holder, V);
-        //vec_min_vec_cu<<<1024, 1024>>>(N, R, holder, V); cudaDeviceSynchronize();
-        //special(N, AB->A->indices, AB->A->values, AB->A->sizes, V, AB->B->indices, AB->B->values, AB->B->sizes, g, R);
-        special_cu<<<2048*2, 1024>>>(N, AB->A->indices, AB->A->values, AB->A->sizes, V, AB->B->indices, AB->B->values, AB->B->sizes, g_temp, R); cudaDeviceSynchronize();
-        //printf("\n");
-    }
-
-__global__ void poisson_solve3_cu(int imax, int jmax, int kmax, 
-    int n1, int n2, int n3, int N, int iterations, 
-    float* V, float* g, float* g_temp, float *R, float w,
-    float h, sparseMats* AB, float* holder) {
-
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-    for (int i=index_x; i < N; i+=stride_x) {
-        R[i] = 0;
-        for (int j=0; j < AB->A->sizes[i]; j+=1) {
-            R[i] += AB->A->values[i][j] * V[(int)AB->A->indices[i][j]];
-        }
-    }
-    for (int i=index_x; i < N; i+=stride_x) {
-        for (int j=0; j < AB->B->sizes[i]; j+=1) {
-            R[i] -= AB->B->values[i][j] * g[(int)AB->B->indices[i][j]];
-        }
-    }
-    for (int i=index_x; i < N; i+=stride_x) {
-        V[i] = R[i];
-    }
-
-
-        //array_dot_vec(N, AB->A->indices, AB->A->values, AB->A->sizes, V, R);
-        //array_dot_vec_cu<<<1024, 1024>>>(N, AB->A->indices, AB->A->values, AB->A->sizes, V, R); cudaDeviceSynchronize();
-        //array_dot_vec(N, AB->B->indices, AB->B->values, AB->B->sizes, g_temp, holder);
-        //array_dot_vec_cu<<<1024, 1024>>>(N, AB->B->indices, AB->B->values, AB->B->sizes, g_temp, holder); cudaDeviceSynchronize();
-        //vec_min_vec(N, R, holder, V);
-        //vec_min_vec_cu<<<1024, 1024>>>(N, R, holder, V); cudaDeviceSynchronize();
-        //special(N, AB->A->indices, AB->A->values, AB->A->sizes, V, AB->B->indices, AB->B->values, AB->B->sizes, g, R);
-        //special_cu<<<2048*2, 1024>>>(N, AB->A->indices, AB->A->values, AB->A->sizes, V, AB->B->indices, AB->B->values, AB->B->sizes, g_temp, R); cudaDeviceSynchronize();
-        //printf("\n");
-    }
-
-void poisson_solve2(int imax, int jmax, int kmax, 
-    int n1, int n2, int n3, int N, int iterations, 
-    float* V, float* g, float* g_temp, float *R, float w,
-    float h, sparseMat* kernel, float** kernel2) {
-        for (int I=0; I<N; I++) g_temp[I] = w*h*h*g[I]/6.;
-        for (int I=0; I<N; I++) {
-            int k = I % n3;
-            int s1 = (I - k) / n3;
-            int j = s1 % n2;
-            int i = (s1 - j) / n2;
-            if (i >= 1 && i < imax-1 
-                    && j >= 1 && j < jmax-1 
-                    && k >= 1 && k < kmax-1) {
-                g_temp[I] += w/6.*(g_temp[I-1]+g_temp[I-n3]+g_temp[I-n3*n2]);
-            }
-            else {
-                g_temp[I] = 0;
-            }
-        }
-        for (int kk=0; kk<iterations; kk++) {
-            array_dot_vec(N, kernel->indices, kernel->values, kernel->sizes, V, R);
-            //array_dot_vec_cu<<<N, 1>>>(N, kernel->indices, kernel->values, kernel->sizes, V, R); cudaDeviceSynchronize();
-            //mat_dot_vec(N, kernel2, V, R);
-            for (int i=0; i<N; i++) V[i] = R[i] - g_temp[i];
-            //printf("%f, ", sum(N, V));
-        }
-        //printf("\n");
-    }
-
 void poisson_solve(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, int iterations, float* V, float* g, float *R, float w, float h) {
       for (int kk=0; kk<iterations; kk++) {
         for (int I = 0; I < N; I ++) {
@@ -476,7 +26,7 @@ void poisson_solve(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, 
     }
 }
 
-__global__ void poisson_solve_1it_even_cu(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, int iterations, float* V, float* g, float *R, float w, float h) {
+__global__ void poisson_solve_1it_cu(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, int iterations, float* V, float* g, float *R, float w, float h, int oddEven) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
     int stride_x = blockDim.x * gridDim.x;
         for (int I = index_x; I < N; I +=stride_x) {
@@ -485,7 +35,7 @@ __global__ void poisson_solve_1it_even_cu(int imax, int jmax, int kmax, int n1, 
              int j = s1 % n2;
              int i = (s1 - j) / n2;
             if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
-            if ((i+j+k)%2==0) continue;
+            if ((i+j+k)%2==oddEven) continue;
             R[k + n3 * (j + n2 * (i))]=
                 (V[k + n3 * (j + n2 * (i+1))]+
                      V[k + n3 * (j + n2 * (i-1))]+
@@ -497,53 +47,11 @@ __global__ void poisson_solve_1it_even_cu(int imax, int jmax, int kmax, int n1, 
             V[k + n3 * (j + n2 * (i))] += w*R[k + n3 * (j + n2 * (i))];
         }
 }
-__global__ void poisson_solve_1it_odd_cu(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, int iterations, float* V, float* g, float *R, float w, float h) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-        for (int I = index_x; I < N; I +=stride_x) {
-             int k = I % n3;
-             int s1 = (I - k) / n3;
-             int j = s1 % n2;
-             int i = (s1 - j) / n2;
-            if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
-            if ((i+j+k)%2==1) continue;
-            R[k + n3 * (j + n2 * (i))]=
-                (V[k + n3 * (j + n2 * (i+1))]+
-                     V[k + n3 * (j + n2 * (i-1))]+
-                     V[k + n3 * (j+1 + n2 * (i))]+
-                     V[k + n3 * (j-1 + n2 * (i))]+
-                     V[k+1 + n3 * (j + n2 * (i))]+
-                     V[k-1 + n3 * (j + n2 * (i))]
-                 ) / 6.0 - V[k + n3 * (j + n2 * (i))]- (h*h)*g[k + n3 * (j + n2 * (i))]/6.0;
-            V[k + n3 * (j + n2 * (i))] += w*R[k + n3 * (j + n2 * (i))];
-        }
-}
-__global__ void poisson_solve_cu(int imax, int jmax, int kmax, int n1, int n2, int n3, int N, int iterations, float* V, float* g, float *R, float w, float h) {
-      for (int kk=0; kk<iterations; kk++) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-        for (int I = index_x; I < N; I +=stride_x) {
-             int k = I % n3;
-             int s1 = (I - k) / n3;
-             int j = s1 % n2;
-             int i = (s1 - j) / n2;
-            if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
-            R[k + n3 * (j + n2 * (i))]=
-                (V[k + n3 * (j + n2 * (i+1))]+
-                     V[k + n3 * (j + n2 * (i-1))]+
-                     V[k + n3 * (j+1 + n2 * (i))]+
-                     V[k + n3 * (j-1 + n2 * (i))]+
-                     V[k+1 + n3 * (j + n2 * (i))]+
-                     V[k-1 + n3 * (j + n2 * (i))]
-                 ) / 6.0 - V[k + n3 * (j + n2 * (i))]- (h*h)*g[k + n3 * (j + n2 * (i))]/6.0;
-            V[k + n3 * (j + n2 * (i))] += w*R[k + n3 * (j + n2 * (i))];
-        }
-    }
-}
-void before(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
+
+void before_poisson(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int index_x = 0;
     int stride_x = 1;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
         for (int I=0; I<N; I++) g_temp[I] = w*h*h*g[I]/6.;
         for (int I=0; I<N; I++) {
@@ -571,10 +79,10 @@ void before(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float 
     }
  
 }
-__global__ void before_cu(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
+__global__ void before_poisson_cu(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
     int stride_x = blockDim.x * gridDim.x;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
     for (int I=index_x; I<N; I+=stride_x) g_temp[I] = w*h*h*g[I]/6.;
     for (int I=index_x; I<N; I+=stride_x) {
@@ -603,110 +111,10 @@ __global__ void before_cu(int imax, int jmax, int kmax, int tmax, float *ne, flo
  
 }
 
-
-void cpy(int N, float *a, float* b) {
+void after_poisson(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float* ne_temp, float* ni_temp, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int index_x = 0;
     int stride_x = 1;
-    for ( int I = index_x; I < N; I += stride_x) {
-        a[I] = b[I];
-    }
-}
-
-__global__ void cpy_cu(int N, float *a, float* b) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-    for ( int I = index_x; I < N; I += stride_x) {
-        a[I] = b[I];
-    }
-}
-__global__ void loss_even_cu(int imax, int jmax, int kmax, float* ni, float* ne, float* ni_temp, float* ne_temp, float si) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
-    N=n1*n2*n3;
-     float sf=0.0;
-       for ( I = index_x; I < N; I += stride_x) {
-         k = I % n3;
-         s1 = (I - k) / n3;
-         j = s1 % n2;
-         i = (s1 - j) / n2;
-         if (i * j * k == 0 || i >= imax || j >= jmax || k >= kmax) continue;
-        sf=sf+ne[k + n3 * (j + n2 * (i))] ;
-    }
-
-        float alpha=(si-sf)/sf;
-
-    for ( I = index_x; I < N; I += stride_x) {
-         k = I % n3;
-         s1 = (I - k) / n3;
-         j = s1 % n2;
-         i = (s1 - j) / n2;
-        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
-        ne_temp[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-        ni_temp[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-    }
-}
-__global__ void loss_odd_cu(int imax, int jmax, int kmax, float* ni, float* ne, float si) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
-    N=n1*n2*n3;
-     float sf=0.0;
-       for ( I = index_x; I < N; I += stride_x) {
-         k = I % n3;
-         s1 = (I - k) / n3;
-         j = s1 % n2;
-         i = (s1 - j) / n2;
-         if (i * j * k == 0 || i >= imax || j >= jmax || k >= kmax) continue;
-        sf=sf+ne[k + n3 * (j + n2 * (i))] ;
-    }
-
-        float alpha=(si-sf)/sf;
-
-    for ( I = index_x; I < N; I += stride_x) {
-         k = I % n3;
-         s1 = (I - k) / n3;
-         j = s1 % n2;
-         i = (s1 - j) / n2;
-        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
-        if ((i+j+k)%2 == 1) continue;
-        ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-        ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-    }
-}
-
-void loss(int imax, int jmax, int kmax, float* ni, float* ne, float si) {
-    int index_x = 0;
-    int stride_x = 1;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
-    N=n1*n2*n3;
-     float sf=0.0;
-       for ( I = index_x; I < N; I += stride_x) {
-         k = I % n3;
-         s1 = (I - k) / n3;
-         j = s1 % n2;
-         i = (s1 - j) / n2;
-         if (i * j * k == 0 || i >= imax || j >= jmax || k >= kmax) continue;
-        sf=sf+ne[k + n3 * (j + n2 * (i))] ;
-    }
-
-        float alpha=(si-sf)/sf;
-
-    for ( I = index_x; I < N; I += stride_x) {
-         k = I % n3;
-         s1 = (I - k) / n3;
-         j = s1 % n2;
-         i = (s1 - j) / n2;
-        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
-        ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-        ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-    }
-
-}
-void after(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float* ne_temp, float* ni_temp, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
-    int index_x = 0;
-    int stride_x = 1;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
   for ( I = index_x; I < N; I += stride_x) {
          k = I % n3;
@@ -1047,12 +455,10 @@ void after(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float* 
 
 }
 
-
-
-__global__ void after_cu(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *ne_temp, float* ni_temp, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi, float *sf_temp) {
+__global__ void after_poisson_cu(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *ne_temp, float* ni_temp, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi, float *sf_temp) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
     int stride_x = blockDim.x * gridDim.x;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
   for ( I = index_x; I < N; I += stride_x) {
          k = I % n3;
@@ -1394,11 +800,12 @@ __global__ void after_cu(int imax, int jmax, int kmax, int tmax, float *ne, floa
 //
     *sf_temp = 0;
 }
-void sum(int imax, int jmax, int kmax, float* mat, float* res) {
+
+void sum_ne(int imax, int jmax, int kmax, float* mat, float* res) {
     *res = 0;
     int index_x = 0;
     int stride_x = 1;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
     for (int I = index_x; I < N; I += stride_x) {
         int k = I % n3;
@@ -1411,10 +818,10 @@ void sum(int imax, int jmax, int kmax, float* mat, float* res) {
 
 }
 
-__global__ void sum_cu(int imax, int jmax, int kmax, float* mat, float* res) {
+__global__ void sum_ne_cu(int imax, int jmax, int kmax, float* mat, float* res) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
     int stride_x = blockDim.x * gridDim.x;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
     for (int I = index_x; I < N; I += stride_x) {
         int k = I % n3;
@@ -1428,7 +835,7 @@ __global__ void sum_cu(int imax, int jmax, int kmax, float* mat, float* res) {
 void update_ne(int imax, int jmax, int kmax, float* ne, float* ni, float *sf, float si) {
     int index_x = 0;
     int stride_x = 1;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
     float alpha=(si-sf[0])/(sf[0]);
    for ( int I = index_x; I < N; I += stride_x) {
@@ -1444,7 +851,7 @@ void update_ne(int imax, int jmax, int kmax, float* ne, float* ni, float *sf, fl
 }__global__ void update_ne_cu(int imax, int jmax, int kmax, float* ne, float* ni, float *sf, float si) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
     int stride_x = blockDim.x * gridDim.x;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
     float alpha=(si-sf[0])/(sf[0]);
    for ( int I = index_x; I < N; I += stride_x) {
@@ -1458,151 +865,42 @@ void update_ne(int imax, int jmax, int kmax, float* ne, float* ni, float *sf, fl
    }
 
 }
-__global__ void ne_even(int imax, int jmax, int kmax, float *ne, float *ni, float alpha) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
-    N=n1*n2*n3;
-
-    for ( I = index_x; I < N; I += stride_x) {
-         int k = I % n3;
-         int s1 = (I - k) / n3;
-         int j = s1 % n2;
-         int i = (s1 - j) / n2;
-        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
-        if ((i+j+k)%2==0) continue;
-        ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-        ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-    }
-}
-__global__ void ne_odd(int imax, int jmax, int kmax, float *ne, float *ni, float alpha) {
-    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
-    int stride_x = blockDim.x * gridDim.x;
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
-    N=n1*n2*n3;
-
-    for ( I = index_x; I < N; I += stride_x) {
-         int k = I % n3;
-         int s1 = (I - k) / n3;
-         int j = s1 % n2;
-         int i = (s1 - j) / n2;
-        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
-        if ((i+j+k)%2==1) continue;
-        ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-        ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-    }
-}
-void mardas(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float* ne_temp, float* ni_temp, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
-    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
-    N=n1*n2*n3;
-int iterations = 40;
-
-//float** kernel;
-//kernel = create_kernel(imax, jmax, kmax, w);
-//sparseMat* sp = dense_to_sparse(N, kernel);
-//float** A;
-//float** BB;
-//float** holder1;
-//float* holder2;
-//cudaMallocManaged(&(A ), N*sizeof(A));
-//cudaMallocManaged(&(BB ), N*sizeof(BB));
-//cudaMallocManaged(&(holder1 ), N*sizeof(holder1));
-//cudaMallocManaged(&(holder2 ), N*sizeof(holder2));
-//for (int i=0; i<N; i++) {
-//    //cudaMallocManaged(&my_mat[i], N*sizeof(my_mat[i]));
-//    cudaMallocManaged(&(A[i] ), N*sizeof(A[i]));
-//    cudaMallocManaged(&(BB[i] ), N*sizeof(BB[i]));
-//    cudaMallocManaged(&(holder1[i] ), N*sizeof(holder1[i]));
-//}
-////sparseMats* AB = createAB(N, kernel, iterations, A, BB, holder1);
-//sparseMats* AB;
-//AB = readAB(n1, n2, n3, iterations, A, BB);
-float* sf_temp;
-cudaMallocManaged(&sf_temp, sizeof(sf_temp));
-double begin = clock();
-for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime evolution
-     fuckingCount = 0;
-     printf("%d\n", myTime);
-
-    before_cu<<<256, N/256>>>(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
-    //cudaDeviceSynchronize();
-    //before(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
-
-    //poisson_solve(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
-    //poisson_solve_cu<<<N, 1>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
-    //cudaDeviceSynchronize();
-    //poisson_solve2(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, sp, kernel);
-    //special_cu<<<N, 1>>>(N, AB->A->indices, AB->A->values, AB->A->sizes, V, AB->B->indices, AB->B->values, AB->B->sizes, g_temp, R); 
-    //cudaDeviceSynchronize();
-    //poisson_solve3(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, AB, holder2);
-    //poisson_solve3_cu<<<N, 1>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, AB, holder2); cudaDeviceSynchronize();
-
-    for (kk=0; kk<iterations; kk++) {
-        poisson_solve_1it_even_cu<<<256, N/256>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
-        poisson_solve_1it_odd_cu<<<256, N/256>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
-    }
-    //cudaDeviceSynchronize();
-
-    after_cu<<<256, N/256>>>(imax, jmax, kmax, tmax, ne, ni, ne_temp, ni_temp, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi, sf_temp); 
-    sum_cu<<<256, N/256>>>(imax, jmax, kmax, ne, sf_temp);
-
-    update_ne_cu<<<256, N/256>>>(imax, jmax, kmax, ne, ni, sf_temp, si);
-    //cudaDeviceSynchronize();
-    //printf("sf = %f\n", *sf_temp);
-    //printf("si = %f\n", si);
-    
-
-
-    //cudaDeviceSynchronize();
-    //after(imax, jmax, kmax, tmax, ne, ni, ne_temp, ni_temp, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
-    //sum(imax, jmax, kmax, ne, sf_temp);
-    //printf("sf = %f\n", *sf_temp);
-    //update_ne(imax, jmax, kmax, ne, ni, sf_temp, si);
-    //loss(imax, jmax, kmax, ni, ne, si);
-    //cudaDeviceSynchronize();
-    //ne_even<<<256, N/256>>>(imax, jmax, kmax, ne, ni, alpha);
-    //ne_kdd<<<256, N/256>>>(imax, jmax, kmax, ne, ni, alpha);
-     }
-    cudaDeviceSynchronize();
-    double time_spent1 = (clock() - begin) / CLOCKS_PER_SEC;
-    printf("Time spent without parallelization: %f\n", time_spent1);
-}
 
 int main()
 {
-int imax = 32, jmax = 32, kmax = 64,i,j,k;
-int n1 = imax+3, n2 = jmax+3, n3 = kmax+3;
-float qi=1.6E-19,qe=-1.6E-19, kr = 0,ki = 0,si = 0,sf = 0,alpha = 0, q=1.6E-19,pie=3.14159,Ta,w,eps0,Te,Ti,B,Kb,me,mi,nue,nui,denominator_e,denominator_i,nn,dt,h,wce,wci,mue,mui,dife,difi;
-int tmax = 60;
-float *ne;
-float *ni;
-float *ne_temp;
-float *ni_temp;
-float *difxne;
-float *difyne;
-float *difxni;
-float *difyni;
-float *difxyne;
-float *difxyni;
-float *Exy;
-float *fexy;
-float *fixy;
-float *g;
-float *g_temp;
-float *R;
-float *Ex;
-float *Ey;
-float *fex;
-float *fey;
-float *fix;
-float *fiy;
-float *V;
-float *L;
-float *difzne;
-float *difzni;
-float *Ez;
-float *fez;
-float *fiz;
+    int imax = 32, jmax = 32, kmax = 64,i,j,k;
+    int n1 = imax+3, n2 = jmax+3, n3 = kmax+3;
+    float qi=1.6E-19,qe=-1.6E-19, kr = 0,ki = 0,si = 0,sf = 0,alpha = 0, q=1.6E-19,pie=3.14159,Ta,w,eps0,Te,Ti,B,Kb,me,mi,nue,nui,denominator_e,denominator_i,nn,dt,h,wce,wci,mue,mui,dife,difi;
+    int tmax = 200;
+    float *ne;
+    float *ni;
+    float *ne_temp;
+    float *ni_temp;
+    float *difxne;
+    float *difyne;
+    float *difxni;
+    float *difyni;
+    float *difxyne;
+    float *difxyni;
+    float *Exy;
+    float *fexy;
+    float *fixy;
+    float *g;
+    float *g_temp;
+    float *R;
+    float *Ex;
+    float *Ey;
+    float *fex;
+    float *fey;
+    float *fix;
+    float *fiy;
+    float *V;
+    float *L;
+    float *difzne;
+    float *difzni;
+    float *Ez;
+    float *fez;
+    float *fiz;
     cudaMallocManaged(&(ne ), n1 * n2 * n3 * sizeof(float));
     cudaMallocManaged(&(ni ), n1 * n2 * n3 * sizeof(float));
     cudaMallocManaged(&(ne_temp ), n1 * n2 * n3 * sizeof(float));
@@ -1646,8 +944,6 @@ float *fiz;
     si    = 0.0;
     sf    =0.0;
 
-
-
     for ( i=0; i<imax+3;i++){
         for ( j=0; j<jmax+3; j++){
             for ( k=0; k<kmax+3;k++){
@@ -1670,7 +966,7 @@ float *fiz;
                 fey[k + n3 * (j + n2 * (i))] = 1e-9;
                 fix[k + n3 * (j + n2 * (i))] = 1e-9;
                 fiy[k + n3 * (j + n2 * (i))] = 1e-9;
-                V[k + n3 * (j + n2 * (i))] = (rand() % 10)/10.;
+                V[k + n3 * (j + n2 * (i))] = 1e-9;
                 L[k + n3 * (j + n2 * (i))] = 1e-9;
                 difzne[k + n3 * (j + n2 * (i))] = 1e-9;
                 difzni[k + n3 * (j + n2 * (i))] = 1e-9;
@@ -1698,39 +994,73 @@ float *fiz;
     Ta=acos((cos(pie/imax)+cos(pie/jmax)+cos(pie/kmax))/3.0);// needs to be float checked
     w=2.0/(1.0+sin(Ta));
 // -----------------------------------------------------------------------------------------------
-      //Density initialization
-      // To add multiple Gaussian sources, just simply use the density_initialization function at the (x,y) points that you want
-        int x_position = 15, y_position = 15, z_position = 15;
-       for ( i=1; i<imax-1;i++){
+    //Density initialization
+    // To add multiple Gaussian sources, just simply use the density_initialization function at the (x,y) points that you want
+    int x_position = 15, y_position = 15, z_position = 15;
+    for ( i=1; i<imax-1;i++){
         for ( j=1; j<jmax-1;j++){
             for ( k=1; k<kmax-1;k++){
-                ne[k + n3 * (j + n2 * (i))]= 2.0E13;/*
-                    1.0E14+1.0E14*exp(-(pow((i-x_position),2)+
-                    pow((j-y_position),2)+pow((k-z_position),2))/100.0);*/
-                ni[k + n3 * (j + n2 * (i))]=2.0E13;/*
-                    1.0E14+1.0E14*exp(-(pow((i-x_position),2)+
-                    pow((j-y_position),2)+pow((k-z_position),2))/100.0);*/
+            ne[k + n3 * (j + n2 * (i))]= 2.0E13;/*
+                1.0E14+1.0E14*exp(-(pow((i-x_position),2)+
+                pow((j-y_position),2)+pow((k-z_position),2))/100.0);*/
+            ni[k + n3 * (j + n2 * (i))]=2.0E13;/*
+                1.0E14+1.0E14*exp(-(pow((i-x_position),2)+
+                pow((j-y_position),2)+pow((k-z_position),2))/100.0);*/
             }
         }
     }
 
 
 
-        for ( k=1; k<kmax+1; k++) {
-          for ( j=1; j<jmax+1; j++) {
-           for ( i=1; i<imax+1;i++) {
-         si=si+ne[k + n3 * (j + n2 * (i))] ;
-          }
-         }
+    for ( k=1; k<kmax+1; k++) {
+        for ( j=1; j<jmax+1; j++) {
+            for ( i=1; i<imax+1;i++) {
+            si=si+ne[k + n3 * (j + n2 * (i))] ;
+            }
         }
-// -----------------------------------------------------------------------------------------------
-mardas(imax, jmax, kmax, tmax, ne, ni, ne_temp, ni_temp, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+    }
+
+    int myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+    int iterations = 40;
+
+    float* sf_temp;
+    cudaMallocManaged(&sf_temp, sizeof(sf_temp));
+    double begin = clock();
+    for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime evolution
+        printf("%d\n", myTime);
+//################################################################################################################
+        //UNCOMMENT THE FOLLOWING TO RUN THE CODE ON CPU
+//################################################################################################################
+        //before_poisson(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+
+        //poisson_solve(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
+
+        //after_poisson(imax, jmax, kmax, tmax, ne, ni, ne_temp, ni_temp, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+        //sum_ne(imax, jmax, kmax, ne, sf_temp);
+        //printf("sf = %f\n", *sf_temp);
+        //update_ne(imax, jmax, kmax, ne, ni, sf_temp, si);
 
 
+//################################################################################################################
+        //UNCOMMENT THE FOLLOWING TO RUN THE CODE ON GPU
+//################################################################################################################
+        before_poisson_cu<<<256, N/256>>>(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+        for (kk=0; kk<iterations; kk++) {
+            poisson_solve_1it_cu<<<256, N/256>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h, 1);
+            poisson_solve_1it_cu<<<256, N/256>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h, 0);
+        }
+        after_poisson_cu<<<256, N/256>>>(imax, jmax, kmax, tmax, ne, ni, ne_temp, ni_temp, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi, sf_temp); 
+        sum_ne_cu<<<256, N/256>>>(imax, jmax, kmax, ne, sf_temp);
+        update_ne_cu<<<256, N/256>>>(imax, jmax, kmax, ne, ni, sf_temp, si);
+        //cudaDeviceSynchronize();
+        //printf("sf = %f\n", *sf_temp);
+        //printf("si = %f\n", si);
+     }
 
+    cudaDeviceSynchronize();
+    double time_spent1 = (clock() - begin) / CLOCKS_PER_SEC;
+    printf("Time spent without parallelization: %f\n", time_spent1);
 
     printf("%f\n", V[5 + (kmax+3) * (5 + (jmax+3) * 5)]);
- //   printf("%f\n", V[my_index + (kmax+3) * (my_index + (jmax+3) * my_index)]);
-
 }
-// -----------------------------------------------------------------------------------------------
