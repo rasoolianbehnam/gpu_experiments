@@ -4,9 +4,9 @@ import time as Time
 
 def printf(text, *args):
     print(text%args)
-imax=32
-jmax=32
-kmax=64
+imax=16
+jmax=16
+kmax=16
 tmax=40
 upper_lim = 3
 n1 = imax+upper_lim
