@@ -1,3 +1,11 @@
-*.txt
+*.out
+*.o
+*.log
+*.npz
 *.npy
-*.h5*.txt
+*.swo
+*.swp
+*.pyc
+*.txt
+octave-workspace
+__pycache__
