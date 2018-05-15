@@ -1009,7 +1009,106 @@ void after2(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float 
     }
 }
 
-void after(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
+void cpy(int N, float *a, float* b) {
+    int index_x = 0;
+    int stride_x = 1;
+    for ( int I = index_x; I < N; I += stride_x) {
+        a[I] = b[I];
+    }
+}
+
+__global__ void cpy_cu(int N, float *a, float* b) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    for ( int I = index_x; I < N; I += stride_x) {
+        a[I] = b[I];
+    }
+}
+__global__ void loss_even_cu(int imax, int jmax, int kmax, float* ni, float* ne, float* ni_temp, float* ne_temp, float si) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+     float sf=0.0;
+       for ( I = index_x; I < N; I += stride_x) {
+         k = I % n3;
+         s1 = (I - k) / n3;
+         j = s1 % n2;
+         i = (s1 - j) / n2;
+         if (i * j * k == 0 || i >= imax || j >= jmax || k >= kmax) continue;
+        sf=sf+ne[k + n3 * (j + n2 * (i))] ;
+    }
+
+        float alpha=(si-sf)/sf;
+
+    for ( I = index_x; I < N; I += stride_x) {
+         k = I % n3;
+         s1 = (I - k) / n3;
+         j = s1 % n2;
+         i = (s1 - j) / n2;
+        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+        ne_temp[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+        ni_temp[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+    }
+}
+__global__ void loss_odd_cu(int imax, int jmax, int kmax, float* ni, float* ne, float si) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+     float sf=0.0;
+       for ( I = index_x; I < N; I += stride_x) {
+         k = I % n3;
+         s1 = (I - k) / n3;
+         j = s1 % n2;
+         i = (s1 - j) / n2;
+         if (i * j * k == 0 || i >= imax || j >= jmax || k >= kmax) continue;
+        sf=sf+ne[k + n3 * (j + n2 * (i))] ;
+    }
+
+        float alpha=(si-sf)/sf;
+
+    for ( I = index_x; I < N; I += stride_x) {
+         k = I % n3;
+         s1 = (I - k) / n3;
+         j = s1 % n2;
+         i = (s1 - j) / n2;
+        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+        if ((i+j+k)%2 == 1) continue;
+        ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+        ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+    }
+}
+
+void loss(int imax, int jmax, int kmax, float* ni, float* ne, float si) {
+    int index_x = 0;
+    int stride_x = 1;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+     float sf=0.0;
+       for ( I = index_x; I < N; I += stride_x) {
+         k = I % n3;
+         s1 = (I - k) / n3;
+         j = s1 % n2;
+         i = (s1 - j) / n2;
+         if (i * j * k == 0 || i >= imax || j >= jmax || k >= kmax) continue;
+        sf=sf+ne[k + n3 * (j + n2 * (i))] ;
+    }
+
+        float alpha=(si-sf)/sf;
+
+    for ( I = index_x; I < N; I += stride_x) {
+         k = I % n3;
+         s1 = (I - k) / n3;
+         j = s1 % n2;
+         i = (s1 - j) / n2;
+        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+        ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+        ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+    }
+
+}
+void after(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float* ne_temp, float* ni_temp, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int index_x = 0;
     int stride_x = 1;
     int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
@@ -1321,33 +1420,39 @@ void after(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *
 
 
 
-
         // calculating the loss
-         sf=0.0;
-       for ( I = index_x; I < N; I += stride_x) {
-         k = I % n3;
-         s1 = (I - k) / n3;
-         j = s1 % n2;
-         i = (s1 - j) / n2;
-         if (i * j * k == 0 || i >= imax || j >= jmax || k >= kmax) continue;
-        sf=sf+ne[k + n3 * (j + n2 * (i))] ;
-    }
-
-        alpha=(si-sf)/sf;
-
-    for ( I = index_x; I < N; I += stride_x) {
-         k = I % n3;
-         s1 = (I - k) / n3;
-         j = s1 % n2;
-         i = (s1 - j) / n2;
-        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
-        ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-        ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
-    }
+//         sf=0.0;
+//       for ( I = index_x; I < N; I += stride_x) {
+//         k = I % n3;
+//         s1 = (I - k) / n3;
+//         j = s1 % n2;
+//         i = (s1 - j) / n2;
+//         if (i * j * k == 0 || i >= imax || j >= jmax || k >= kmax) continue;
+//        sf=sf+ne[k + n3 * (j + n2 * (i))] ;
+//    }
+//       printf("sf = %f\n", sf);
+//
+//        alpha=(si-sf)/sf;
+//
+//    for ( I = index_x; I < N; I += stride_x) {
+//         k = I % n3;
+//         s1 = (I - k) / n3;
+//         j = s1 % n2;
+//         i = (s1 - j) / n2;
+//        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+//        ne_temp[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+//        ni_temp[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+//    }
+//    for ( I = index_x; I < N; I += stride_x) {
+//        ne[I] = ne_temp[I];
+//        ni[I] = ni_temp[I];
+//    }
       // if (myTime%100==0.0){
      //  }
 
 }
+
+
 
 __global__ void after_cu2(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
@@ -1755,7 +1860,7 @@ __global__ void after_cu2(int imax, int jmax, int kmax, int tmax, float *ne, flo
     }
     }
 
-__global__ void after_cu(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
+__global__ void after_cu(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *ne_temp, float* ni_temp, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int index_x = threadIdx.x + blockDim.x * blockIdx.x;
     int stride_x = blockDim.x * gridDim.x;
     int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
@@ -2069,32 +2174,138 @@ __global__ void after_cu(int imax, int jmax, int kmax, int tmax, float *ne, floa
 
 
         // calculating the loss
-         sf=0.0;
-       for ( I = index_x; I < N; I += stride_x) {
-         k = I % n3;
-         s1 = (I - k) / n3;
-         j = s1 % n2;
-         i = (s1 - j) / n2;
-         if (i * j * k == 0 || i >= imax || j >= jmax || k >= kmax) continue;
-        sf=sf+ne[k + n3 * (j + n2 * (i))] ;
+//    sf=0.0;
+//      for ( I = index_x; I < N; I += stride_x) {
+//        k = I % n3;
+//        s1 = (I - k) / n3;
+//        j = s1 % n2;
+//        i = (s1 - j) / n2;
+//        if (i * j * k == 0 || i >= imax || j >= jmax || k >= kmax) continue;
+//       sf=sf+ne[k + n3 * (j + n2 * (i))] ;
+//   }
+//
+//       alpha=(si-sf)/sf;
+//
+//       float tmp;
+//   for ( I = index_x; I < N; I += stride_x) {
+//        k = I % n3;
+//        s1 = (I - k) / n3;
+//        j = s1 % n2;
+//        i = (s1 - j) / n2;
+//       if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+//       ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+//       ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+//   }
+//   for ( I = index_x; I < N; I += stride_x) {
+//       ne[I] = ne_temp[I];
+//       ne[I] = ne_temp[I];
+//   }
+      // if (myTime%100==0.0){
+     //  }
+//
+}
+void sum(int imax, int jmax, int kmax, float* mat, float* res) {
+    *res = 0;
+    int index_x = 0;
+    int stride_x = 1;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+       if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+        *res += mat[I];
     }
 
-        alpha=(si-sf)/sf;
+}
+
+__global__ void sum_cu(int imax, int jmax, int kmax, float* mat, float* res) {
+    __shared__ float a;
+    a = 0;
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+    for (int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+       if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+        a += mat[I];
+    }
+    *res = a;
+}
+void update_ne(int imax, int jmax, int kmax, float* ne, float* ni, float *sf, float si) {
+    int index_x = 0;
+    int stride_x = 1;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+    float alpha=(si-sf[0])/(sf[0]);
+   for ( int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+       if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+       ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+       ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+   }
+
+}__global__ void update_ne_cu(int imax, int jmax, int kmax, float* ne, float* ni, float *sf, float si) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+    float alpha=(si-sf[0])/(sf[0]);
+   for ( int I = index_x; I < N; I += stride_x) {
+        int k = I % n3;
+        int s1 = (I - k) / n3;
+        int j = s1 % n2;
+        int i = (s1 - j) / n2;
+       if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+       ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+       ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+   }
+
+}
+__global__ void ne_even(int imax, int jmax, int kmax, float *ne, float *ni, float alpha) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
 
     for ( I = index_x; I < N; I += stride_x) {
-         k = I % n3;
-         s1 = (I - k) / n3;
-         j = s1 % n2;
-         i = (s1 - j) / n2;
+         int k = I % n3;
+         int s1 = (I - k) / n3;
+         int j = s1 % n2;
+         int i = (s1 - j) / n2;
         if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+        if ((i+j+k)%2==0) continue;
         ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
         ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
     }
-      // if (myTime%100==0.0){
-     //  }
-
 }
-void mardas(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
+__global__ void ne_odd(int imax, int jmax, int kmax, float *ne, float *ni, float alpha) {
+    int index_x = threadIdx.x + blockDim.x * blockIdx.x;
+    int stride_x = blockDim.x * gridDim.x;
+    int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
+    N=n1*n2*n3;
+
+    for ( I = index_x; I < N; I += stride_x) {
+         int k = I % n3;
+         int s1 = (I - k) / n3;
+         int j = s1 % n2;
+         int i = (s1 - j) / n2;
+        if (i * j * k == 0 || i >= imax-1 || j >= jmax-1 || k >= kmax-1) continue;
+        if ((i+j+k)%2==1) continue;
+        ne[k + n3 * (j + n2 * (i))]=ne[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+        ni[k + n3 * (j + n2 * (i))]=ni[k + n3 * (j + n2 * (i))]+alpha*ne[k + n3 * (j + n2 * (i))] ;
+    }
+}
+void mardas(int imax, int jmax, int kmax, int tmax, float *ne, float *ni, float* ne_temp, float* ni_temp, float *difxne, float *difyne, float *difxni, float *difyni, float *difxyne, float *difxyni, float *Exy, float *fexy, float *fixy, float *g, float* g_temp, float *R, float *Ex, float *Ey, float *fex, float *fey, float *fix, float *fiy, float *V, float *L, float *difzne, float *difzni, float *Ez, float *fez, float *fiz, float qi, float qe, float kr, float ki, float si, float sf, float alpha, float q, float pie, float Ta , float w , float eps0 , float Te, float Ti, float B, float Kb, float me, float mi, float nue, float nui, float denominator_e, float denominator_i, float nn, float dt, float h, float wce, float wci, float mue, float mui, float dife, float difi) {
     int  n1=imax+3, n2 = jmax+3, n3 = kmax+3,i,j,k,fuckingCount,myTime,kk,I,N,s1; 
     N=n1*n2*n3;
 int iterations = 40;
@@ -2119,17 +2330,18 @@ int iterations = 40;
 ////sparseMats* AB = createAB(N, kernel, iterations, A, BB, holder1);
 //sparseMats* AB;
 //AB = readAB(n1, n2, n3, iterations, A, BB);
-
+float* sf_temp;
+cudaMallocManaged(&sf_temp, sizeof(sf_temp));
 double begin = clock();
 for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime evolution
      fuckingCount = 0;
      printf("%d\n", myTime);
 
-    //before_cu<<<256, N/256>>>(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+    before_cu<<<256, N/256>>>(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
     //cudaDeviceSynchronize();
-    before(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+    //before(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
 
-    poisson_solve(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
+    //poisson_solve(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
     //poisson_solve_cu<<<N, 1>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
     //cudaDeviceSynchronize();
     //poisson_solve2(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, sp, kernel);
@@ -2138,20 +2350,40 @@ for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime e
     //poisson_solve3(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, AB, holder2);
     //poisson_solve3_cu<<<N, 1>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, g_temp, R, w, h, AB, holder2); cudaDeviceSynchronize();
 
-    //for (kk=0; kk<iterations; kk++) {
-    //    poisson_solve_1it_even_cu<<<256, N/256>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
-    //    poisson_solve_1it_odd_cu<<<256, N/256>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
-    //}
+    for (kk=0; kk<iterations; kk++) {
+        poisson_solve_1it_even_cu<<<256, N/256>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
+        poisson_solve_1it_odd_cu<<<256, N/256>>>(imax, jmax, kmax, n1, n2, n3, N, iterations, V, g, R, w, h);
+    }
     //cudaDeviceSynchronize();
 
     //after_cu2<<<256, N/256>>>(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi); 
-    //cudaDeviceSynchronize();
-    after2(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
 
+    after_cu<<<256, N/256>>>(imax, jmax, kmax, tmax, ne, ni, ne_temp, ni_temp, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi); 
+    cudaDeviceSynchronize();
+    sum(imax, jmax, kmax, ne, sf_temp);
+
+    printf("sf = %f\n", *sf_temp);
+    printf("si = %f\n", si);
+    update_ne_cu<<<256, N/256>>>(imax, jmax, kmax, ne, ni, sf_temp, si);
+    
+
+    //loss_even_cu<<<256, N/256>>>(imax, jmax, kmax, ni, ne, ni_temp, ne_temp, si);
+    //cpy_cu<<<N, 1>>>(N, ne, ne_temp);
+    //cpy_cu<<<N, 1>>>(N, ni, ni_temp);
+    //loss_odd_cu<<<256, N/256>>>(imax, jmax, kmax, ni, ne, si);
 
     //cudaDeviceSynchronize();
+    //after2(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+    //after(imax, jmax, kmax, tmax, ne, ni, ne_temp, ni_temp, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+    //sum(imax, jmax, kmax, ne, sf_temp);
+    //printf("sf = %f\n", *sf_temp);
+    //update_ne(imax, jmax, kmax, ne, ni, sf_temp, si);
+    //loss(imax, jmax, kmax, ni, ne, si);
+    //cudaDeviceSynchronize();
+    //ne_even<<<256, N/256>>>(imax, jmax, kmax, ne, ni, alpha);
+    //ne_kdd<<<256, N/256>>>(imax, jmax, kmax, ne, ni, alpha);
      }
-    //cudaDeviceSynchronize();
+    cudaDeviceSynchronize();
     double time_spent1 = (clock() - begin) / CLOCKS_PER_SEC;
     printf("Time spent without parallelization: %f\n", time_spent1);
 }
@@ -2161,9 +2393,11 @@ int main()
 int imax = 32, jmax = 32, kmax = 64,i,j,k;
 int n1 = imax+3, n2 = jmax+3, n3 = kmax+3;
 float qi=1.6E-19,qe=-1.6E-19, kr = 0,ki = 0,si = 0,sf = 0,alpha = 0, q=1.6E-19,pie=3.14159,Ta,w,eps0,Te,Ti,B,Kb,me,mi,nue,nui,denominator_e,denominator_i,nn,dt,h,wce,wci,mue,mui,dife,difi;
-int tmax = 200;
+int tmax = 60;
 float *ne;
 float *ni;
+float *ne_temp;
+float *ni_temp;
 float *difxne;
 float *difyne;
 float *difxni;
@@ -2191,6 +2425,8 @@ float *fez;
 float *fiz;
     cudaMallocManaged(&(ne ), n1 * n2 * n3 * sizeof(float));
     cudaMallocManaged(&(ni ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(ne_temp ), n1 * n2 * n3 * sizeof(float));
+    cudaMallocManaged(&(ni_temp ), n1 * n2 * n3 * sizeof(float));
     cudaMallocManaged(&(difxne ), n1 * n2 * n3 * sizeof(float));
     cudaMallocManaged(&(difyne ), n1 * n2 * n3 * sizeof(float));
     cudaMallocManaged(&(difxni ), n1 * n2 * n3 * sizeof(float));
@@ -2308,7 +2544,7 @@ float *fiz;
          }
         }
 // -----------------------------------------------------------------------------------------------
-mardas(imax, jmax, kmax, tmax, ne, ni, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
+mardas(imax, jmax, kmax, tmax, ne, ni, ne_temp, ni_temp, difxne, difyne, difxni, difyni, difxyne, difxyni, Exy, fexy, fixy, g, g_temp, R, Ex, Ey, fex, fey, fix, fiy, V, L, difzne, difzni, Ez, fez, fiz, qi, qe, kr, ki, si, sf, alpha, q, pie,Ta ,w ,eps0 , Te, Ti, B, Kb, me, mi, nue, nui, denominator_e, denominator_i, nn, dt, h, wce, wci, mue, mui, dife, difi);
 
 
 
