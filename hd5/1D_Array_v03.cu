@@ -1028,7 +1028,7 @@ int main()
     cudaMallocManaged(&sf_temp, sizeof(sf_temp));
     double begin = clock();
     for ( myTime=1; myTime<tmax; myTime++){  // This for loop takes care of myTime evolution
-        printf("%d\n", myTime);
+        //printf("%d\n", myTime);
 //################################################################################################################
         //UNCOMMENT THE FOLLOWING TO RUN THE CODE ON CPU
 //################################################################################################################
